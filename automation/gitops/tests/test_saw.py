@@ -287,6 +287,19 @@ class SawIntegrationTests(unittest.TestCase):
         with self.assertRaises(subprocess.CalledProcessError):
             render(ROOT / 'tenant/bootstrap', {'rag': None, 'tenant': {'name': '7kzmd'}, 'saw': saw})
 
+    def test_container_policy_broad_egress_requires_explicit_demo_waiver(self):
+        chart = ROOT / 'tenant/saw/charts/saw-runtime-policies'
+        fixture = yaml.safe_load((chart / 'tests/container-values.yaml').read_text())
+        fixture['network']['egress'][-1]['to'][0]['networks'] = ['0.0.0.0/0', '::/0']
+        command = ['helm', 'template', 'demo', str(chart), '--namespace', 'saw-alice', '-f', '-',
+                   '--api-versions', 'policy.networking.k8s.io/v1alpha1/AdminNetworkPolicy',
+                   '--api-versions', 'admissionregistration.k8s.io/v1/ValidatingAdmissionPolicy']
+        with self.assertRaises(subprocess.CalledProcessError):
+            subprocess.run(command, input=yaml.safe_dump(fixture), text=True, capture_output=True, check=True)
+        fixture['network']['allowDemoBroadEgress'] = True
+        rendered = subprocess.run(command, input=yaml.safe_dump(fixture), text=True, capture_output=True, check=True)
+        self.assertIn('0.0.0.0/0', rendered.stdout)
+
     def test_invalid_identity_and_unpinned_inputs_fail(self):
         base = {'rag': None, 'saw': {'userName': '7kzmd', 'clusterDomain': 'test.example', 'credentialProxyImage': PROXY, 'vmSource': {'dataSource': 'golden'}}}
         with self.assertRaises(subprocess.CalledProcessError):
