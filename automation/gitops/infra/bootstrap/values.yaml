@@ -53,6 +53,13 @@ saw:
     customInference:
       host: ""
       port: 443
+  # Optional isolated governance service for container workspaces.
+  containerGovernance:
+    enabled: false
+    namespace: saw-container-governance
+    revision: ""
+    values: {}
+    imageBuildNamespace: ""
   # Optional RHDH/SAW portal. It is disabled by default so existing VM-only
   # installations remain unchanged. The portal chart expects the RHDH
   # operator to be installed in the cluster.

@@ -19,4 +19,16 @@ metadata:
 data:
   custom-inference.yaml: |
 {{ toYaml $profile | indent 4 }}
+{{- $container := .Values.saw.containerGovernance | default dict }}
+{{- if eq (lower (toString ($container.enabled | default false))) "true" }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: governance-interceptor-extra-profiles
+  namespace: {{ required "saw.containerGovernance.namespace is required" $container.namespace }}
+data:
+  custom-inference.yaml: |
+{{ toYaml $profile | indent 4 }}
+{{- end }}
 {{- end }}
