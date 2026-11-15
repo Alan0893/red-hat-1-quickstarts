@@ -35,7 +35,7 @@
 {{- $defaults := dict
   "users" (list $user)
   "ownerResolution" (dict "enabled" true "resolverNamespace" "saw-keycloak")
-  "global" (dict "repoURL" $repo "targetRevision" $revision "vpArgoNamespace" .Values.gitops.namespace "clusterDomain" $domain)
+  "global" (dict "repoURL" $repo "targetRevision" $revision "vpArgoNamespace" .Values.gitops.namespace "clusterDomain" $domain "chartPrefix" "automation/gitops/tenant/saw/charts")
   "defaults" (dict "openshellSaw" $openshell) -}}
 {{- if eq $mode "container" -}}
 {{- $_ := set $defaults "containerSites" (dict $name (required "saw.containerSite is required for container deployment" $saw.containerSite)) -}}
@@ -48,7 +48,9 @@
 {{- $_ := set $defaults.defaults.openshellSaw.credentialProxy "customInferenceHost" $saw.inferenceHost -}}
 {{- end -}}
 {{- if eq (lower (toString (($saw.inferenceSeed | default dict).enabled))) "true" -}}
+{{- if eq $mode "vm" -}}
 {{- $_ := set (index $defaults.users 0) "vaultPrefix" (printf "secret/data/hub/saw-%s" $name) -}}
+{{- end -}}
 {{- $_ := set $defaults.global "webSearch" (dict "enabled" false) -}}
 {{- $_ := set $defaults.defaults "profiles" (list "custom-inference") -}}
 {{- end -}}
