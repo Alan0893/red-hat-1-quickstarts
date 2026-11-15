@@ -39,6 +39,9 @@ caProvider:
   (dict "name" "saw-keycloak" "namespace" "saw-keycloak" "path" "automation/gitops/tenant/saw/charts/openshell-keycloak" "wave" "0" "values" (mustMergeOverwrite $keycloakDefaults (deepCopy $saw.keycloak.values)))
   (dict "name" "saw-governance-policy" "namespace" "openshell-agents" "path" "automation/gitops/tenant/saw/charts/governance-policy" "wave" "0" "values" dict)
   (dict "name" "saw-governance-interceptor" "namespace" "openshell-agents" "path" "automation/gitops/tenant/saw/charts/governance-interceptor" "wave" "0" "values" $saw.governance.values) -}}
+{{- if eq (lower (toString (($saw.agentSandbox | default dict).enabled | default false))) "true" -}}
+{{- $apps = append $apps (dict "name" "saw-agent-sandbox" "namespace" "agent-sandbox-system" "path" "automation/gitops/tenant/saw/charts/agent-sandbox" "wave" "0" "values" (dict "enabled" true)) -}}
+{{- end -}}
 {{- if eq (lower (toString ($portal.enabled | default false))) "true" -}}
 {{- $apps = append $apps (dict "name" "saw-rhdh" "namespace" ($portal.namespace | default "rhdh") "path" "automation/gitops/tenant/saw/charts/openshell-rhdh" "wave" "2" "values" $portalDefaults) -}}
 {{- end -}}

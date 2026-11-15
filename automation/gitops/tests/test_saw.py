@@ -118,6 +118,10 @@ class SawIntegrationTests(unittest.TestCase):
         docs = render(chart, {'saw': {'enabled': True, 'clusterDomain': 'test.example', 'keycloak': {'postgresPassword': 'pass: # example'}}})
         apps = {x['metadata']['name']: x for x in docs if x['kind'] == 'Application'}
         self.assertEqual(set(apps), {'saw-vault', 'saw-external-secrets', 'saw-virtualization', 'saw-keycloak', 'saw-governance-policy', 'saw-governance-interceptor'})
+        sandbox_docs = render(chart, {'saw': {'enabled': True, 'clusterDomain': 'test.example', 'keycloak': {'postgresPassword': 'test-password'}, 'agentSandbox': {'enabled': True}}})
+        sandbox = next(x for x in sandbox_docs if x['kind'] == 'Application' and x['metadata']['name'] == 'saw-agent-sandbox')
+        self.assertEqual(sandbox['spec']['destination']['namespace'], 'agent-sandbox-system')
+        self.assertTrue(yaml.safe_load(sandbox['spec']['source']['helm']['values'])['enabled'])
         portal_docs = render(chart, {'saw': {'enabled': True, 'clusterDomain': 'test.example', 'keycloak': {'postgresPassword': 'pass: # example'}, 'portal': {'enabled': True}}})
         portal = next(x for x in portal_docs if x['kind'] == 'Application' and x['metadata']['name'] == 'saw-rhdh')
         self.assertEqual(portal['spec']['destination']['namespace'], 'rhdh')
@@ -259,6 +263,29 @@ class SawIntegrationTests(unittest.TestCase):
         child_apps = child(app)
         runtime = next(d for d in child_apps if d['kind'] == 'Application' and d['metadata']['name'] == 'saw-user-7kzmd')
         self.assertTrue(runtime['spec']['source']['path'].endswith('/saw-portal-container'))
+
+    def test_container_inference_seed_uses_registration_scoped_vault_path(self):
+        saw = {
+            'deploymentMode': 'container', 'userName': 'user-7kzmd', 'clusterDomain': 'test.example',
+            'ownerSubject': '11111111-1111-4111-8111-111111111111',
+            'registration': 'abcdef0123456789', 'installationID': '22222222-2222-4222-8222-222222222222',
+            'profile': 'custom-inference', 'inferenceHost': 'model.example',
+            'containerSite': {'subject': '11111111-1111-4111-8111-111111111111',
+                              'automaticEnrollment': {'enabled': False}},
+            'inferenceSeed': {'enabled': True, 'secretData': {
+                'api_key': 'test-key', 'model': 'test-model', 'url': 'https://model.example/v1'}},
+        }
+        docs = render(ROOT / 'tenant/bootstrap', {'rag': None, 'tenant': {'name': '7kzmd'}, 'saw': saw})
+        app = next(d for d in docs if d['kind'] == 'Application')
+        values = yaml.safe_load(app['spec']['source']['helm']['values'])
+        self.assertEqual(values['users'][0]['vaultPrefix'], 'secret/data/hub/saw-user-7kzmd/abcdef0123456789')
+        self.assertEqual(values['global']['chartPrefix'], 'automation/gitops/tenant/saw/charts')
+        job = next(d for d in docs if d['kind'] == 'Job' and d['metadata']['name'] == 'saw-user-7kzmd-inference-seed')
+        env = job['spec']['template']['spec']['containers'][0]['env']
+        self.assertEqual(env[0]['value'], 'hub/saw-user-7kzmd/abcdef0123456789/inference')
+        saw['registration'] = '../bad'
+        with self.assertRaises(subprocess.CalledProcessError):
+            render(ROOT / 'tenant/bootstrap', {'rag': None, 'tenant': {'name': '7kzmd'}, 'saw': saw})
 
     def test_invalid_identity_and_unpinned_inputs_fail(self):
         base = {'rag': None, 'saw': {'userName': '7kzmd', 'clusterDomain': 'test.example', 'credentialProxyImage': PROXY, 'vmSource': {'dataSource': 'golden'}}}

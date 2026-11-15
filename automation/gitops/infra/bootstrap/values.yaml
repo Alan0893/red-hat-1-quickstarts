@@ -35,6 +35,10 @@ saw:
     values: {}
   externalSecrets:
     values: {}
+  # Install the cluster-wide Agent Sandbox controller only when this platform
+  # owns it; existing platform-managed installations must not be adopted.
+  agentSandbox:
+    enabled: false
   inferenceSeed:
     enabled: false
     sourceSecret: saw-inference
