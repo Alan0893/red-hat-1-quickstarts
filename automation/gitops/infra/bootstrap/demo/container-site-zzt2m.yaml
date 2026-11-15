@@ -2,6 +2,15 @@
 # Boundary captured from registration 39f66ddca7ebc714 on this demo cluster.
 # It must be recaptured if the foundation or shared governance changes.
 saw:
+  containerGovernance:
+    enabled: true
+    namespace: saw-container-governance
+    revision: ac1faf21a65112e42622d708fe4a8a77791482c2
+    imageBuildNamespace: saw-component-builds
+    values:
+      image: image-registry.openshift-image-registry.svc:5000/saw-component-builds/governance-interceptor@sha256:70e3d43c1ffee2cf56947da3bae26678077152894825aa402bbceb5490ab230a
+      kubernetesGateways:
+        - {namespace: saw-user-8shcw, gatewayId: user-8shcw}
   portal:
     enabled: true
     values:
