@@ -42,6 +42,32 @@ def assert_pod_images_pinned(test, docs):
 
 
 class SawIntegrationTests(unittest.TestCase):
+    def test_isolated_container_governance_is_pinned_and_scoped(self):
+        chart = ROOT / 'infra/bootstrap'
+        sha = 'b' * 40
+        values = {'saw': {'enabled': True, 'clusterDomain': 'test.example',
+                          'keycloak': {'postgresPassword': 'example'},
+                          'governance': {'customInference': {'host': 'model.example', 'port': 443}},
+                          'containerGovernance': {'enabled': True, 'namespace': 'saw-container-governance',
+                              'revision': sha, 'imageBuildNamespace': 'saw-builds',
+                              'values': {'image': PROXY, 'kubernetesGateways': [
+                                  {'namespace': 'saw-alice', 'gatewayId': 'alice'}]}}}}
+        docs = render(chart, values)
+        apps = {d['metadata']['name']: d for d in docs if d['kind'] == 'Application'}
+        container_app = apps['saw-container-governance-interceptor']
+        self.assertEqual(container_app['spec']['source']['targetRevision'], sha)
+        self.assertEqual(container_app['spec']['destination']['namespace'], 'saw-container-governance')
+        self.assertEqual(yaml.safe_load(container_app['spec']['source']['helm']['values'])['image'], PROXY)
+        self.assertEqual(apps['saw-governance-interceptor']['spec']['destination']['namespace'], 'openshell-agents')
+        profiles = [d for d in docs if d['kind'] == 'ConfigMap' and d['metadata']['name'] == 'governance-interceptor-extra-profiles']
+        self.assertEqual({d['metadata']['namespace'] for d in profiles}, {'openshell-agents', 'saw-container-governance'})
+        self.assertEqual(profiles[0]['data'], profiles[1]['data'])
+        role = next(d for d in docs if d['kind'] == 'Role' and d['metadata']['name'] == 'saw-container-governance-image-pull')
+        self.assertEqual(role['rules'][0]['resourceNames'], ['governance-interceptor'])
+        values['saw']['containerGovernance']['namespace'] = 'openshell-agents'
+        with self.assertRaises(subprocess.CalledProcessError):
+            render(chart, values)
+
     def test_account_job_assigns_dashboard_admin_role(self):
         script = (ROOT / 'tenant/bootstrap/files/saw-create-user.py').read_text()
         posted = []
