@@ -1,6 +1,6 @@
 # Disposable cluster demo. Remove the broad-egress waiver before production use.
-# This is the foundation-review stage: enrollment is intentionally disabled
-# until the actual deployed boundary has been inspected and recorded.
+# Boundary captured from registration 39f66ddca7ebc714 on this demo cluster.
+# It must be recaptured if the foundation or shared governance changes.
 saw:
   portal:
     enabled: true
@@ -22,7 +22,40 @@ saw:
             custom-inference:
               inferenceBaseURL: https://maas-rhdp.apps.maas.redhatworkshops.io/v1
               allowHosts: [maas-rhdp.apps.maas.redhatworkshops.io]
-              reference: {}
+              reference:
+                binding: b9dd64277a6f77bcda0b3eaea3cddb380170994f3a5b907ee88b5c000b21747a
+                deny: 79558fd7757e83a7e26bf87d1840b7c975e8571d0e2a458ed61e159d9d578d27
+                gateway: bb91467b69dca7bdf08b4c5d4da118aaa1a1a91e8149c4b30d2edc4df8910c85
+                gatewayConfig: d3bdda2858f4273b278ad18f2addf6e0b3984eec6e59718e85f6edccffb72551
+                gatewayNetwork: 00474888555955f6ebef6e8a31bbc163d968105d5509d6403c85a28c34a7f48c
+                gatewayRole: 2928a5d9e1e66735288e5be8d369ee8147f083bfa4113e889af81cd6074c7ac6
+                gatewayService: cdcf263fac5054230285675fe10228c734cf1cac3f529e7792bca2ebd9bb116a
+                governance:
+                  sha256: 381555714e510a5f65c25f78c1a5d8c88b479a69c6b47089e15358c215ce5c49
+                  uid: a40bfc18-d4c7-4782-ae91-161b5da93c60
+                governancePolicy:
+                  sha256: 985cc2c8fbccb3ba83ab651b783d15d2e4f98c963337a2459d0be2c8151f390b
+                  uid: 8e75e8e0-db28-44f6-8284-b47ddd69a9c2
+                governanceProfiles:
+                  sha256: c7408e794c24c59895d7615de7bce502af537aa52cb587288d59ce9276e44534
+                  uid: 7a05cf40-a751-40d6-9bdf-c01dd1985d95
+                governanceService:
+                  sha256: 2b4edf262d6b3c9468a0e49a7e77bf5c4a8aacb03ed3c7e33915d6c7ec4b41fb
+                  uid: dbf0ae70-f84d-49c8-854f-f05e6e3da2d4
+                network: 8151112c87ab87cf7a99839cfd810082e998f928b5dafcddf957aae5424b1241
+                podDeleteBinding: 86d7e957ab7cf37394f9c068aaae0113d821f7a8ace571ee3d8ea066da89d765
+                podDeleteGuard: 29ac5fcae13128c63e04e031ce1f8c7fc90bef4381cef23d06f1b9bdb0969b28
+                proxy: 7b3225ff7078713c4ecb374757d852a12095dffe9c5878b841afaa8eea7ed504
+                proxyNetwork: ad22312cc82f1ae9be03931af2186a1c073bc509a13c37073a1b9882c4c6905e
+                proxyPolicy: 85a5e48711e2a396e127a2aea86920788e7f70982a93e2019f4e8158addc98b4
+                publicCA: equals independent trusted proxy public CA
+                secretBinding: 920f4783f9344636f78015fedca2208cd63de45e3a69c8f97a0993acacbf6342
+                secretGuard: 588edee67e65ca9b21dd912aca8c25c5311bc7ba8394114e07799e15e4303f0e
+                serviceBinding: 59a0689532639f1de802f6ea882172dc4b77cbfa5cbf16e3133d72d594802492
+                serviceGuard: 88f52b7c7215d0aa14b3bf91450c6d04ee0106f664d9dd6288d619b64243ff50
+                supervisorFence: c5ffb2ab56778a6e515bc038c285ebfe2e56822c4143ef270f6ca5bfb5ba0c62
+                validation: 32847b51d63b62e06802c31b16e0ec8316874574dac7c8ee5792c4555fc383f7
+                workloadFence: ac8cf686df8dab4f31bcab9ff863c7021d9e40908b852e5f58c62d38751773da
           stack:
             identity:
               revision: b979c53e632307548791b570f5b3ec727c4dca2d
@@ -167,7 +200,7 @@ saw:
                   workspace: default
                   sandbox: notebook
           automaticEnrollment:
-            enabled: false
+            enabled: true
             revision: b979c53e632307548791b570f5b3ec727c4dca2d
             image: quay.io/sauagarw/saw-kubernetes-runtime@sha256:89dc067ddae743ac0a94d957c102a4849f101dc5ba8582ccad6f758ad3ccf605
             buildNamespace: openshell-agents
