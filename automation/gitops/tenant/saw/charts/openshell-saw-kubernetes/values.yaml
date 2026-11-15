@@ -42,6 +42,8 @@ kubernetes:
   governance:
     endpoint: ""
   network:
+    # Explicit waiver for disposable demonstrations only.
+    allowDemoBroadEgress: false
     # All gateway egress is explicit; no namespace-wide internet allowance.
     # Include API Service + real backend IPs, DNS, OIDC, governance and proxy.
     gatewayEgress: []
