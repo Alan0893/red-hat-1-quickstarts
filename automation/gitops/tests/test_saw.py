@@ -337,6 +337,26 @@ class SawIntegrationTests(unittest.TestCase):
                             '--api-versions', 'admissionregistration.k8s.io/v1/ValidatingAdmissionPolicy'],
                            input=yaml.safe_dump(source['helm']['valuesObject']), text=True, capture_output=True, check=True)
 
+    def test_custom_inference_container_request_uses_only_inference_secret(self):
+        chart = ROOT / 'tenant/saw/charts/openshell-rhdh/files'
+        catalog = json.loads((chart / 'profile-catalog.json').read_text())['profiles']
+        self.assertEqual(catalog, json.loads((ROOT / 'tenant/saw/charts/saw-users/files/profile-catalog.json').read_text())['profiles'])
+        module_spec = importlib.util.spec_from_file_location('saw_portal', chart / 'portal.py')
+        portal = importlib.util.module_from_spec(module_spec)
+        module_spec.loader.exec_module(portal)
+        data = {'deploymentMode': 'container', 'profile': 'custom-inference',
+                'inference.api_key': 'test-key', 'inference.url': 'https://model.example/v1',
+                'inference.model': 'test-model'}
+        with mock.patch.dict(os.environ, {'SAW_DEPLOYMENT_MODES': '["vm", "container"]'}):
+            profile, secrets = portal.parse_request(data, catalog)
+        self.assertEqual(profile, 'custom-inference')
+        self.assertEqual(set(secrets), {'inference'})
+        boundary = {'inferenceBaseURL': 'https://model.example/v1', 'allowHosts': ['model.example']}
+        self.assertEqual(portal.approved_endpoint(catalog[profile], secrets, boundary), 'https://model.example/v1')
+        secrets['inference']['url'] = 'https://other.example/v1'
+        with self.assertRaises(portal.PortalError):
+            portal.approved_endpoint(catalog[profile], secrets, boundary)
+
     def test_invalid_identity_and_unpinned_inputs_fail(self):
         base = {'rag': None, 'saw': {'userName': '7kzmd', 'clusterDomain': 'test.example', 'credentialProxyImage': PROXY, 'vmSource': {'dataSource': 'golden'}}}
         with self.assertRaises(subprocess.CalledProcessError):
