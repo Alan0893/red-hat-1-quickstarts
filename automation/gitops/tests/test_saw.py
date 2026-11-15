@@ -2,6 +2,7 @@ import subprocess
 import unittest
 import json
 import importlib.util
+import hashlib
 import os
 import tempfile
 from unittest import mock
@@ -299,6 +300,42 @@ class SawIntegrationTests(unittest.TestCase):
         fixture['network']['allowDemoBroadEgress'] = True
         rendered = subprocess.run(command, input=yaml.safe_dump(fixture), text=True, capture_output=True, check=True)
         self.assertIn('0.0.0.0/0', rendered.stdout)
+
+    def test_demo_container_site_renders_foundation_and_component_apps(self):
+        site_file = ROOT / 'infra/bootstrap/demo/container-site-zzt2m.yaml'
+        site = yaml.safe_load(site_file.read_text())['saw']['portal']['values']['containerSites']['user-8shcw']
+        module_spec = importlib.util.spec_from_file_location('saw_workspace', ROOT / 'tenant/saw/charts/saw-users/files/workspace.py')
+        workspace = importlib.util.module_from_spec(module_spec)
+        module_spec.loader.exec_module(workspace)
+        catalog = json.loads((ROOT / 'tenant/saw/charts/saw-users/files/profile-catalog.json').read_text())['profiles']
+        user = {'name': 'user-8shcw', 'ownerSubject': site['subject'], 'registration': 'abcdef0123456789',
+                'installationID': '22222222-2222-4222-8222-222222222222', 'profiles': ['custom-inference'],
+                'vaultPrefix': 'secret/data/hub/saw-user-8shcw/abcdef0123456789', 'pruneOnRemove': True,
+                'customInferenceURL': site['customInferenceURL'], 'values': {'deployment': {'mode': 'container'}}}
+        defaults = {'global': {'clusterDomain': 'cluster-zzt2m.dyn.redhatworkshops.io',
+                               'repoURL': 'https://github.com/rhpds/red-hat-1-quickstarts.git',
+                               'targetRevision': site['stack']['gateway']['revision'], 'vpArgoNamespace': 'openshift-gitops',
+                               'chartPrefix': 'automation/gitops/tenant/saw/charts', 'webSearch': {'enabled': False}}}
+        values = workspace.project_workspace(user, defaults, site, catalog)
+        apps = render(ROOT / 'tenant/saw/charts/saw-users', values, namespace='openshell-agents')
+        bom = next(d for d in apps if d['kind'] == 'Application' and d['metadata']['name'] == 'saw-user-8shcw-bom')
+        profile_map = next(d for d in child(bom) if d['kind'] == 'ConfigMap' and d['metadata']['name'] == 'saw-bom-profiles')
+        digest = hashlib.sha256(json.dumps(profile_map['data'], sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode()).hexdigest()
+        self.assertEqual(digest, site['automaticEnrollment']['approvedProfiles']['custom-inference'])
+        runtime = next(d for d in apps if d['kind'] == 'Application' and d['metadata']['name'] == 'saw-user-8shcw')
+        foundation = child(runtime)
+        components = [d for d in foundation if d['kind'] == 'Application']
+        self.assertEqual(len(components), 5)
+        self.assertTrue(all(d['spec']['source']['path'].startswith('automation/gitops/tenant/saw/charts/') for d in components))
+        self.assertTrue(any(d['kind'] == 'ExternalSecret' and d['metadata']['name'] == 'inference' for d in foundation))
+        for component in components:
+            source = component['spec']['source']
+            subprocess.run(['helm', 'template', source['helm']['releaseName'], str(ROOT.parents[1] / source['path']),
+                            '--namespace', component['spec']['destination']['namespace'], '-f', '-',
+                            '--api-versions', 'agents.x-k8s.io/v1beta1/Sandbox',
+                            '--api-versions', 'policy.networking.k8s.io/v1alpha1/AdminNetworkPolicy',
+                            '--api-versions', 'admissionregistration.k8s.io/v1/ValidatingAdmissionPolicy'],
+                           input=yaml.safe_dump(source['helm']['valuesObject']), text=True, capture_output=True, check=True)
 
     def test_invalid_identity_and_unpinned_inputs_fail(self):
         base = {'rag': None, 'saw': {'userName': '7kzmd', 'clusterDomain': 'test.example', 'credentialProxyImage': PROXY, 'vmSource': {'dataSource': 'golden'}}}
