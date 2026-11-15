@@ -330,6 +330,9 @@ class SawIntegrationTests(unittest.TestCase):
     def test_demo_container_site_renders_foundation_and_component_apps(self):
         site_file = ROOT / 'infra/bootstrap/demo/container-site-zzt2m.yaml'
         site = yaml.safe_load(site_file.read_text())['saw']['portal']['values']['containerSites']['user-8shcw']
+        bootstrap = site['stack']['gateway']['values']['kubernetes']['workload']['runtimeImage']
+        self.assertIn('/odh-openshell-sandbox@sha256:', bootstrap)
+        self.assertNotEqual(bootstrap, site['automaticEnrollment']['image'])
         module_spec = importlib.util.spec_from_file_location('saw_workspace', ROOT / 'tenant/saw/charts/saw-users/files/workspace.py')
         workspace = importlib.util.module_from_spec(module_spec)
         module_spec.loader.exec_module(workspace)
@@ -356,12 +359,16 @@ class SawIntegrationTests(unittest.TestCase):
         self.assertTrue(any(d['kind'] == 'ExternalSecret' and d['metadata']['name'] == 'inference' for d in foundation))
         for component in components:
             source = component['spec']['source']
-            subprocess.run(['helm', 'template', source['helm']['releaseName'], str(ROOT.parents[1] / source['path']),
+            rendered = subprocess.run(['helm', 'template', source['helm']['releaseName'], str(ROOT.parents[1] / source['path']),
                             '--namespace', component['spec']['destination']['namespace'], '-f', '-',
                             '--api-versions', 'agents.x-k8s.io/v1beta1/Sandbox',
                             '--api-versions', 'policy.networking.k8s.io/v1alpha1/AdminNetworkPolicy',
                             '--api-versions', 'admissionregistration.k8s.io/v1/ValidatingAdmissionPolicy'],
                            input=yaml.safe_dump(source['helm']['valuesObject']), text=True, capture_output=True, check=True)
+            if component['metadata']['name'].endswith('-gateway'):
+                self.assertIn('sandbox_runtime_image = "' + bootstrap + '"', rendered.stdout)
+            if component['metadata']['name'].endswith('-policy'):
+                self.assertIn(bootstrap, rendered.stdout)
 
     def test_custom_inference_container_request_uses_only_inference_secret(self):
         chart = ROOT / 'tenant/saw/charts/openshell-rhdh/files'
