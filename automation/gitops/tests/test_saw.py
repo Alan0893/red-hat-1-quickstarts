@@ -357,6 +357,25 @@ class SawIntegrationTests(unittest.TestCase):
         with self.assertRaises(portal.PortalError):
             portal.approved_endpoint(catalog[profile], secrets, boundary)
 
+    def test_container_previous_child_checks_configured_chart_prefix(self):
+        chart = ROOT / 'tenant/saw/charts/saw-users/files/workspace.py'
+        module_spec = importlib.util.spec_from_file_location('saw_workspace_path_test', chart)
+        workspace = importlib.util.module_from_spec(module_spec)
+        module_spec.loader.exec_module(workspace)
+        owner = {'name': 'alice', 'installationID': 'install', 'registration': 'registration', 'ownerSubject': 'subject'}
+        revision = 'a' * 40
+        prefix = 'automation/gitops/tenant/saw/charts'
+        values = {'users': [owner], 'global': {'targetRevision': revision}}
+        app = {'metadata': {'labels': {'openshell.pattern/owner': 'alice'}, 'ownerReferences': [
+            {'apiVersion': 'argoproj.io/v1alpha1', 'kind': 'ApplicationSet', 'name': 'portal', 'controller': True}]},
+            'spec': {'source': {'path': prefix + '/saw-users', 'targetRevision': revision,
+                                'helm': {'values': json.dumps(values)}}}}
+        self.assertEqual(workspace.previous_child(app, 'portal', owner, prefix), values)
+        with self.assertRaises(workspace.WorkspaceError):
+            workspace.previous_child(app, 'portal', owner, 'charts')
+        with self.assertRaises(workspace.WorkspaceError):
+            workspace.previous_child(app, 'portal', owner, '../charts')
+
     def test_invalid_identity_and_unpinned_inputs_fail(self):
         base = {'rag': None, 'saw': {'userName': '7kzmd', 'clusterDomain': 'test.example', 'credentialProxyImage': PROXY, 'vmSource': {'dataSource': 'golden'}}}
         with self.assertRaises(subprocess.CalledProcessError):
