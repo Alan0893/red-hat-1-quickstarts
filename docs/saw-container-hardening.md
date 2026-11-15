@@ -26,6 +26,13 @@ configuration:
 
 Before using the container path outside the demo cluster:
 
+- [ ] Qualify the deployment on the upstream-supported OpenShift 4.22 or later;
+  this demo cluster runs 4.20.
+- [ ] Replace the locally built preview governance image with a released,
+  validated container-compatible image and review the new boundary.
+- [ ] Investigate temporary administrator certificate propagation and repeated
+  TLS handshake failures during reconciliation; verify reliable concurrent
+  controller and relay sessions.
 - [ ] Replace \`0.0.0.0/0\` and \`::/0\` with approved external CIDRs.
 - [ ] Restrict gateway egress to the Kubernetes API and cluster DNS.
 - [ ] Restrict Keycloak/OIDC traffic to the Keycloak route or service.
