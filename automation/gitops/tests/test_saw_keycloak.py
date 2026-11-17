@@ -69,7 +69,7 @@ class KeycloakBootstrapTests(unittest.TestCase):
                             with mock.patch.object(module, 'Keycloak', return_value=kc):
                                 module.bootstrap()
                     scope_calls = [(method, path) for method, path, body in calls if '/default-client-scopes/' in path]
-                    expected_scopes = [('PUT', '/clients/controller-id/default-client-scopes/admin-scope')] * (2 if modern else 0)
+                    expected_scopes = [('PUT', '/clients/controller-id/default-client-scopes/admin-scope')] * (1 if modern else 0)
                     self.assertEqual(scope_calls, expected_scopes)
                     self.assertEqual((admin / 'client-secret').read_text(), 'test-client-secret')
                     role_calls = [body for method, path, body in calls if method == 'POST' and '/role-mappings/' in path]

@@ -244,3 +244,108 @@ the OpenShell password policy.
 `update-saw.py` reapplies the reviewed compatibility changes listed in
 `saw-patches.json`. It fails when an upstream edit no longer matches the expected
 patch location so the next vendor refresh cannot silently drop these fixes.
+Local demo files live directly under `charts/saw-bom/harness/demo-assistant/`
+and `charts/saw-bom/profiles/demo-assistant/` in this directory. Edit them here.
+The refresh preserves these two directories from the repository's `tenant/saw/`
+tree, including when writing to an alternate `--destination`. It stops for review
+if upstream introduces either directory. All other vendored files are replaced.
+Existing files
+use the manifest's `old`/`new` patches.
+
+To check the pinned refresh against a local upstream checkout:
+
+```sh
+SAW_UPSTREAM_SOURCE=/path/to/secure-agent-workspace python3 -m unittest \
+  automation.gitops.tests.test_saw.SawRefreshTests
+```
+
+
+## Personal-assistant demo with the existing lab identity
+
+The demo uses VM deployment mode. Mailpit, Mattermost and Radicale run once in
+the cluster; each tenant uses its existing `saw.userName` and
+`saw.account.password` for a private inbox, chat team and calendar.
+
+Enable `saw.demo.enabled`, `saw.demo.calendarEnabled` and
+`saw.demo.provisioningEnabled` in the **infra** bootstrap values. Infra deploys
+the service charts, synthetic Mattermost administrator and read-only
+Mailpit/calendar gateways authenticated against SAW Keycloak. Separate source
+listeners share an identity-login lock; backend policies prevent direct access
+around them.
+
+Enable `saw.demo.enabled` and `saw.demo.provisioningEnabled` in the **tenant**
+bootstrap alongside `saw.account.enabled` and `saw.account.password`. The Job
+`vault/saw-<user>-demo-seed` verifies the lab login, populates and verifies all
+three sources, and writes provider credentials to
+`secret/data/hub/saw-<user>/{mailpit,mattermost,calendar}`. Inference remains at
+`hub/saw-<user>/inference`. Existing accounts are never reset to bypass a
+password mismatch.
+
+The harness starts `mailpit-reader.mjs`, `mattermost-reader.mjs` and
+`calendar-reader.mjs` as separate MCP servers, following upstream's individual
+Gmail/Slack reader layout. They use the shared `briefing-lib.mjs` for collection
+state, deduplication and storage. The existing local `briefing-writer.mjs` saves
+the daily briefing, including cited decision research.
+MCP server names use underscores for model compatibility. Like the upstream harness, it
+inherits OpenClaw's tool settings rather than replacing them with a demo
+allowlist. This keeps skill loading subject to the existing tool configuration.
+The separate tool-action gate still governs execution. The security exercise
+uses an injected request to run `curl` through the existing `exec` tool; the
+policy denies unlisted commands. Scheduling remains subject to the existing policy.
+
+The installer enables the bundle and re-declares its MCP servers under
+`mcp.servers` in OpenClaw's configuration so provider placeholders and the
+sandbox's CA settings reach each process. Tool Search also inherits the existing
+configuration. On upgrade, the installer restores the tool settings saved before
+the demo override, preserving later operator changes. Verify in a fresh
+conversation that the assistant executes the MCP readers and briefing writer
+successfully and saves the briefing. The demo follows the daily-briefing skill's
+short metadata and Markdown workflow structure. Confirm that OpenClaw can read
+the skill body with workspace confinement enabled; a loaded bundle or a printed
+function call is insufficient.
+
+### Storage and setup recovery
+
+PostgreSQL retains accounts, chat and sessions on a PVC. Infrastructure passes
+the provisioned `saw.keycloak.postgresPassword` into the
+`mattermost-postgres-credentials` Secret. Retain the PVC, credential Secret and
+private tenant state Secrets across syncs. The first upgrade from `emptyDir`
+creates a new database; existing data is not migrated automatically. Back up
+and migrate needed data before upgrading, or restore synthetic fixtures by
+rerunning setup.
+
+Keep the password consistent with any existing database; changing the Secret
+alone does not rotate the password stored in PostgreSQL.
+
+Wait for PostgreSQL readiness, then sync
+the infra `saw-demo-admin` hook and the tenant bootstrap Applications **with
+hooks enabled**. Syncing only a `saw-users-*` child does not rerun its tenant seed
+Job. Missing fixtures are restored by reseeding; bad credentials or failed TLS
+checks must be repaired before retrying. Inspect failures with:
+
+```sh
+oc logs -n vault job/saw-<lab-username>-demo-seed
+```
+
+For local development, port-forward the sources and run
+`automation/gitops/tenant/bootstrap/files/seed-demo.py seed`, `verify` or
+`reset`. Initial population requires `MATTERMOST_ADMIN_TOKEN` and
+`SAW_DEMO_PASSWORD` in the operator environment. `--username` selects the lab
+account. Retain the private state file; reset removes only that demo's generated
+records. Fixtures live in `tenant/bootstrap/files/demo-data.json`.
+
+### Validate the demonstration
+
+Confirm the setup Jobs and source ExternalSecrets have succeeded, then verify
+three live reads, a saved briefing and a matching denial event. The
+[Showroom module](../../../../content/modules/ROOT/pages/module-07-saw-personal-assistant.adoc)
+contains the prompts and evidence checks for workspace `default`, sandbox
+`notebook`. Configure a trusted OpenShell gateway for the assigned lab user
+before the session and sign in as that same user.
+
+A direct upload check verifies the tool gate separately from a source-induced
+attempt. Neither establishes a network denial. For runtime troubleshooting:
+
+```sh
+openshell logs notebook --workspace default --source sandbox --since 10m
+```

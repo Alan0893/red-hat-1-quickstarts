@@ -666,7 +666,7 @@ HARNESS_IMAGE_MAX_BYTES = 512 * 1024 * 1024
 # no longer wants, not leave them stale.
 HARNESS_CONFIG_KEYS = ("plugins.load.paths", "skills.load.extraDirs")
 # Provider types that are also OpenClaw chat channels.
-OPENCLAW_CHAT_CHANNELS = frozenset({"slack"})
+OPENCLAW_CHAT_CHANNELS = frozenset({"slack", "mattermost"})
 OPENCLAW_EXEC_ENV = ("OPENCLAW_HOME=/sandbox SQLITE_TMPDIR=/sandbox/.openclaw/state "
                      "TMPDIR=/sandbox/.openclaw/state OPENCLAW_NIX_MODE=0")
 # The podman driver's workload container (its supervisor has the same
@@ -2162,6 +2162,52 @@ def openclaw_replacement_profile(output):
 
 def ws_args(name):
     return [] if name == "default" else ["--workspace", name]
+
+
+# Configure provider channels and the harness tool scope before onboarding.
+_OPENCLAW_PREFLIGHT = """\
+const fs = require("node:fs");
+const root = "/sandbox/.openclaw";
+const file = root + "/openclaw.json";
+const desired = JSON.parse(process.argv[1]);
+const cfg = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
+cfg.channels ??= {};
+cfg.plugins ??= {};
+cfg.plugins.entries ??= {};
+for (const name of desired.channels) {
+  cfg.channels[name] = {...cfg.channels[name], enabled: false};
+  cfg.plugins.entries[name] = {...cfg.plugins.entries[name], enabled: false};
+}
+// Migrate the previous demo connector without retaining executable plugin paths.
+if (Array.isArray(cfg.plugins.load?.paths)) {
+  cfg.plugins.load.paths = cfg.plugins.load.paths.filter(p => p !== "/sandbox/.saw/trusted/source-readers");
+}
+if (Array.isArray(cfg.plugins.allow)) cfg.plugins.allow = cfg.plugins.allow.filter(p => p !== "saw-source-readers");
+delete cfg.plugins.entries["saw-source-readers"];
+const saved = root + "/saw-harness-tools-before.json";
+const legacy = root + "/saw-source-tools-before.json";
+let state = fs.existsSync(saved) ? JSON.parse(fs.readFileSync(saved, "utf8")) : null;
+if (fs.existsSync(legacy)) {
+  state ??= {before: JSON.parse(fs.readFileSync(legacy, "utf8")), managed: cfg.tools?.allow};
+}
+fs.mkdirSync(root, {recursive: true});
+if ((desired.tools || []).length) {
+  state ??= {before: cfg.tools || {}};
+  state.managed = desired.tools;
+  fs.writeFileSync(saved, JSON.stringify(state), {mode: 0o600});
+  cfg.tools = {...cfg.tools, allow: desired.tools, toolSearch: false};
+} else if (state) {
+  cfg.tools ??= {};
+  for (const [key, managed] of [["allow", state.managed], ["toolSearch", false]]) {
+    if (JSON.stringify(cfg.tools[key]) === JSON.stringify(managed)) {
+      if (key in state.before) cfg.tools[key] = state.before[key]; else delete cfg.tools[key];
+    }
+  }
+  if (fs.existsSync(saved)) fs.unlinkSync(saved);
+}
+fs.writeFileSync(file, JSON.stringify(cfg, null, 2) + "\\n", {mode: 0o600});
+if (fs.existsSync(legacy)) fs.unlinkSync(legacy);
+"""
 
 
 # CJS so `node -e` can update OpenClaw's writable configuration. All trusted
@@ -3838,6 +3884,7 @@ class ProfileApplier:
         inference = openclaw_inference_settings(sb, provider)
         model = inference["model"]
         oc_env = OPENCLAW_EXEC_ENV
+        self.disable_provider_channels(ws, sb, exec_cmd, oc_env)
         # OpenShell 0.1.x: no inference.local. OpenClaw calls the provider's
         # own endpoint with the placeholder key this exec receives in the
         # provider's env var (e.g. NVIDIA_API_KEY); the sandbox proxy puts in
@@ -3989,17 +4036,12 @@ class ProfileApplier:
         self.install_keepalive(ws, sb)
 
     def disable_provider_channels(self, ws, sb, exec_cmd, oc_env):
-        """Keep OpenClaw's own chat channel off for a provider that shares
-        its name (slack). The provider is for governed reads (the harness's
-        MCP servers); onboarding skips channels. Found live: with the Slack
-        provider attached, the gateway treats the slack channel as configured,
-        tries to install @openclaw/slack from npm at startup (egress denied)
-        and refuses to start; the UI then answers 502."""
+        """Keep provider channels off and apply the mounted harness tool scope."""
         types = {p.type for p in ws.providers if p.name in sb.providers}
-        for channel in sorted(types & OPENCLAW_CHAT_CHANNELS):
-            self.cli(*exec_cmd, "sh", "-c",
-                     f"{oc_env} openclaw config set channels.{channel}.enabled false",
-                     check=False)
+        info = self.harness_info.get((ws.name, sb.name)) or {}
+        settings = {"channels": sorted(types & OPENCLAW_CHAT_CHANNELS),
+                    "tools": info.get("toolAllowlist", [])}
+        self.cli(*exec_cmd, "node", "-e", _OPENCLAW_PREFLIGHT, json.dumps(settings))
 
     def configure_harness(self, ws, sb, exec_cmd, oc_env):
         """Point OpenClaw at the mounted bundle (openclaw_harness_config).
@@ -4035,6 +4077,8 @@ class ProfileApplier:
                 _saw_core.enable_harness_plugin(i, oc_env) for i in ids)
             self.cli(*exec_cmd, "sh", "-c", script, check=False)
         self.configure_harness_mcp(ws, sb, exec_cmd, oc_env, info)
+        # Onboarding may reset tool settings; reapply scope before starting the gateway.
+        self.disable_provider_channels(ws, sb, exec_cmd, oc_env)
 
     def configure_harness_mcp(self, ws, sb, exec_cmd, oc_env, info):
         """Re-declare the bundle's MCP servers under mcp.servers
@@ -4647,9 +4691,20 @@ class ProfileApplier:
                 # Sandbox exec cannot restore foreign ownership. Normalize a copy;
                 # keep the original recovery archive and verify all other metadata.
                 normalized = Path(tmp) / "restore.tar.gz"
+                # Drop anything that belongs to an installer-owned mount. A
+                # recovery archive made while a mount sat somewhere else holds
+                # that mount's files (found live: ./harness/ from an archive
+                # taken before the harness target moved back), and restoring
+                # them over the read-only mount fails the verification below
+                # on every apply, with no way out. The mounts are rebuilt from
+                # their volumes anyway, so they are never ours to restore.
+                owned = tuple(self.preserve_pruned(ws, sb))
                 try:
                     with tarfile.open(local, "r:gz") as source, tarfile.open(normalized, "w:gz") as target:
                         for member in source:
+                            path = member.name if member.name.startswith("./") else "./" + member.name
+                            if any(path == own or path.startswith(own + "/") for own in owned):
+                                continue
                             member.uid, member.gid = map(int, ids)
                             member.uname = member.gname = ""
                             for key in ("uid", "gid", "uname", "gname"):

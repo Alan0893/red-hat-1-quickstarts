@@ -255,6 +255,33 @@ class SawIntegrationTests(unittest.TestCase):
 
 
 class SawRefreshTests(unittest.TestCase):
+    @unittest.skipUnless(os.environ.get('SAW_UPSTREAM_SOURCE'), 'Set SAW_UPSTREAM_SOURCE to a local upstream checkout')
+    def test_pinned_refresh_reproduces_vendored_files(self):
+        current = ROOT / 'tenant/saw'
+        ref = json.loads((current / 'source.json').read_text())['commit']
+        with tempfile.TemporaryDirectory() as tmp:
+            destination = Path(tmp) / 'saw'
+            updater.update(os.environ['SAW_UPSTREAM_SOURCE'], ref, destination)
+            def snapshot(directory):
+                result = {}
+                for path in directory.rglob('*'):
+                    if not path.is_file() or '__pycache__' in path.parts or path.suffix == '.pyc':
+                        continue
+                    relative = path.relative_to(directory).as_posix()
+                    if relative in ('README.md', 'source.json'):
+                        continue
+                    # The original import removed blank final lines in .helmignore.
+                    data = path.read_bytes()
+                    result[relative] = data.rstrip(b'\n') if path.name == '.helmignore' else data
+                return result
+            expected, actual = snapshot(current), snapshot(destination)
+            self.assertEqual(actual.keys(), expected.keys())
+            for path in expected:
+                with self.subTest(path=path):
+                    self.assertEqual(actual[path], expected[path])
+            updater.update(os.environ['SAW_UPSTREAM_SOURCE'], ref, destination)
+            self.assertEqual(snapshot(destination), actual)
+
     def test_refresh_is_repeatable_and_preserves_documentation(self):
         with tempfile.TemporaryDirectory() as tmp:
             source, destination = Path(tmp) / 'source', Path(tmp) / 'destination'
@@ -273,9 +300,15 @@ class SawRefreshTests(unittest.TestCase):
                      'charts/openshell-keycloak/templates/postgres.yaml': 'username: {{ .Values.postgres.username }}\npassword: {{ .Values.postgres.password }}\n',
                      'image-builder-charts/helm/example/Chart.yaml': 'name: example\nversion: 0.1.0\n',
                      'overrides/governance-profiles/kustomization.yaml': 'kind: Kustomization\n'}
-            for patch in json.loads((ROOT / 'saw-patches.json').read_text()):
-                files.setdefault(patch['file'], '')
-                files[patch['file']] += patch['old']
+            patches = json.loads((ROOT / 'saw-patches.json').read_text())
+            for patch in patches:
+                files[patch['file']] = (ROOT / 'tenant/saw' / patch['file']).read_text()
+            # Reconstruct pre-patch files in reverse order: later patches may
+            # use context introduced by an earlier compatibility fix.
+            for patch in reversed(patches):
+                contents = files[patch['file']]
+                self.assertEqual(contents.count(patch['new']), 1, patch['file'])
+                files[patch['file']] = contents.replace(patch['new'], patch['old'])
             for name, contents in files.items():
                 path = source / name
                 path.parent.mkdir(parents=True, exist_ok=True)
@@ -291,11 +324,55 @@ class SawRefreshTests(unittest.TestCase):
             self.assertIn('automation/gitops/tenant/saw/charts/', (destination / 'charts/saw-users/templates/applications.yaml').read_text())
             self.assertIn('@sha256:', (destination / 'charts/openshell-keycloak/values.yaml').read_text())
             self.assertEqual((destination / 'README.md').read_text(), 'local documentation\n')
-            for patch in json.loads((ROOT / 'saw-patches.json').read_text()):
-                self.assertIn(patch['new'], (destination / patch['file']).read_text())
+            for patch in patches:
+                self.assertEqual((destination / patch['file']).read_bytes(), (ROOT / 'tenant/saw' / patch['file']).read_bytes())
+
+            for relative in updater.LOCAL_DIRECTORIES:
+                local = ROOT / 'tenant/saw' / relative
+                for file in local.rglob('*'):
+                    if file.is_file():
+                        self.assertEqual((destination / file.relative_to(ROOT / 'tenant/saw')).read_bytes(),
+                                         file.read_bytes())
 
             self.assertIn('EnableVirtioFsConfigVolumes', (destination / 'charts/openshift-cnv/templates/hyperconverged.yaml').read_text())
-            updater.update(source, 'HEAD', destination)
+            # Refreshing in place must preserve edits in the single source tree,
+            # while respecting local deletions and replacing unowned files.
+            marker = destination / updater.LOCAL_DIRECTORIES[0] / 'mcp/local-edit.mjs'
+            marker.write_text('// local edit\n')
+            (destination / 'obsolete-vendor-file').write_text('remove on refresh\n')
+            with mock.patch.object(updater, 'DESTINATION', destination):
+                updater.update(source, 'HEAD', destination)
+                self.assertEqual(marker.read_text(), '// local edit\n')
+                self.assertFalse((destination / 'obsolete-vendor-file').exists())
+                marker.unlink()
+                updater.update(source, 'HEAD', destination)
+            self.assertEqual(snapshot(), before)
+
+            with mock.patch.object(updater, 'DESTINATION', Path(tmp) / 'missing-local-source'):
+                with self.assertRaisesRegex(ValueError, 'Missing local SAW directory'):
+                    updater.update(source, 'HEAD', destination)
+            self.assertEqual(snapshot(), before)
+
+            # An incompatible upstream addition must leave the existing vendor
+            # tree intact, even after other patches have been staged.
+            for relative in updater.LOCAL_DIRECTORIES:
+                with self.subTest(collision=relative):
+                    collision = source / relative / 'plugin.json'
+                    collision.parent.mkdir(parents=True, exist_ok=True)
+                    collision.write_text('different upstream implementation\n')
+                    subprocess.run(['git', '-C', str(source), 'add', '-A'], check=True)
+                    subprocess.run(['git', '-C', str(source), '-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'upstream collision'], check=True)
+                    with self.assertRaisesRegex(ValueError, 'review the local demo directory'):
+                        updater.update(source, 'HEAD', destination)
+                    self.assertEqual(snapshot(), before)
+                    collision.unlink()
+
+            changed = patches[0]
+            (source / changed['file']).write_text('upstream changed the patch context\n')
+            subprocess.run(['git', '-C', str(source), 'add', '-A'], check=True)
+            subprocess.run(['git', '-C', str(source), '-c', 'core.hooksPath=/dev/null', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'upstream context change'], check=True)
+            with self.assertRaisesRegex(ValueError, 'review the local compatibility patch'):
+                updater.update(source, 'HEAD', destination)
             self.assertEqual(snapshot(), before)
 
 

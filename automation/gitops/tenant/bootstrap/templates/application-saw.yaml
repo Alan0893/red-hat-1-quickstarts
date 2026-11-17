@@ -12,6 +12,9 @@
 {{- if not (has $mode (list "vm" "container")) -}}
 {{- fail "saw.deploymentMode must be vm or container" -}}
 {{- end -}}
+{{- if and (eq $mode "container") (eq (lower (toString (($saw.demo | default dict).provisioningEnabled))) "true") -}}
+{{- fail "personal-assistant demo requires saw.deploymentMode=vm" -}}
+{{- end -}}
 {{- $proxy := $saw.credentialProxyImage | default "" -}}
 {{- if and (eq $mode "vm") (not (regexMatch "^.+@sha256:[a-f0-9]{64}$" $proxy)) -}}
 {{- if not $proxy -}}{{- fail "saw.credentialProxyImage is required" -}}{{- end -}}
@@ -59,6 +62,22 @@
 {{- $_ := set $values.global "repoURL" $repo -}}
 {{- $_ := set $values.global "targetRevision" $revision -}}
 {{- $_ := set $values.global "vpArgoNamespace" .Values.gitops.namespace -}}
+{{- if eq (lower (toString (($saw.demo | default dict).enabled))) "true" -}}
+{{- $egress := $values.defaults.openshellSaw.egress | default dict -}}
+{{- $hosts := $egress.extraAllow | default list -}}
+{{- range $service := list "mailpit" "mattermost" "radicale" -}}
+{{- $hosts = append $hosts (printf "%s-ui-openshell-agents.apps.%s" $service $domain) -}}
+{{- end -}}
+{{- $_ := set $egress "extraAllow" ($hosts | uniq) -}}
+{{- $_ := set $values.defaults.openshellSaw "egress" $egress -}}
+{{- $demo := $saw.demo | default dict -}}
+{{- $provision := eq (lower (toString $demo.provisioningEnabled)) "true" -}}
+{{- if $provision -}}
+{{- $_ := set $values.defaults "profiles" (list "demo-assistant") -}}
+{{- $_ := set (index $values.users 0) "vaultPrefix" (printf "secret/data/hub/saw-%s" $name) -}}
+{{- $_ := set $values.defaults.openshellSaw "sourceReaders" (dict "enabled" true "demoId" $name "tenantUser" $name) -}}
+{{- end -}}
+{{- end -}}
 ---
 apiVersion: argoproj.io/v1alpha1
 kind: Application

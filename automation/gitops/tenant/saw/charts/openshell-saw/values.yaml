@@ -475,3 +475,7 @@ networkPolicy:
   # an in-cluster inference Service or npm mirror.
   extraEgress: []
   extraIngress: []
+
+# Enable tenant demo credential endpoints after all providers are approved.
+sourceReaders:
+  enabled: false

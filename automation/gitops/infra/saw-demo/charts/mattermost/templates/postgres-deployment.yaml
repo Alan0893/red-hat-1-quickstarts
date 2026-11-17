@@ -1,0 +1,135 @@
+{{- $credentials := .Values.postgresCredentials -}}
+{{- $password := required "postgresCredentials.password is required" $credentials.password -}}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mattermost-postgres-credentials
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+type: Opaque
+stringData:
+  password: {{ $password | quote }}
+  datasource: {{ printf "postgres://%s:%s@mattermost-postgres:%v/%s?sslmode=disable&connect_timeout=10" ($credentials.user | urlquery | replace "+" "%20") ($password | urlquery | replace "+" "%20") .Values.postgresPort ($credentials.database | urlquery | replace "+" "%20") | quote }}
+---
+{{- if not (regexMatch "^.+@sha256:[a-f0-9]{64}$" .Values.postgresImage) }}
+{{- fail "postgresImage must be pinned by digest" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mattermost-postgres
+  labels:
+    app.kubernetes.io/name: mattermost-postgres
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mattermost-postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mattermost-postgres
+        app.kubernetes.io/instance: {{ .Release.Name }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccountName | quote }}
+      securityContext:
+        {{- toYaml .Values.postgresPodSecurityContext | nindent 8 }}
+      containers:
+        - name: postgres
+          image: {{ .Values.postgresImage }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          env:
+            - name: POSTGRESQL_DATABASE
+              value: {{ .Values.postgresCredentials.database }}
+            - name: POSTGRESQL_USER
+              value: {{ .Values.postgresCredentials.user }}
+            - name: POSTGRESQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mattermost-postgres-credentials
+                  key: password
+          ports:
+            - name: postgres
+              containerPort: {{ .Values.postgresPort }}
+              protocol: TCP
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - {{ .Values.postgresCredentials.user }}
+                - -d
+                - {{ .Values.postgresCredentials.database }}
+            initialDelaySeconds: {{ .Values.postgresReadinessInitialDelaySeconds }}
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - {{ .Values.postgresCredentials.user }}
+            initialDelaySeconds: {{ .Values.postgresLivenessInitialDelaySeconds }}
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.postgresResources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.postgresSecurityContext | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/pgsql/data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: mattermost-postgres
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mattermost-postgres
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: mattermost-postgres
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: mattermost
+              app.kubernetes.io/instance: {{ .Release.Name }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.postgresPort }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mattermost-postgres
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ required "storage.postgresSize is required" .Values.storage.postgresSize }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mattermost-postgres
+  labels:
+    app.kubernetes.io/name: mattermost-postgres
+    app.kubernetes.io/instance: {{ .Release.Name }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: postgres
+      port: {{ .Values.postgresPort }}
+      targetPort: postgres
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: mattermost-postgres

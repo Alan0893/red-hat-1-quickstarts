@@ -1,0 +1,16 @@
+apiVersion: saw.redhat.com/v1alpha1
+kind: HarnessBundle
+metadata:
+  name: demo-assistant
+spec:
+  agent: openclaw
+  version: 0.1.0
+  plugins: []
+  mcpServers:
+    - name: mailpit_reader
+      governanceProfile: mailpit
+    - name: mattermost_reader
+      governanceProfile: mattermost
+    - name: calendar_reader
+      governanceProfile: calendar
+    - name: briefing_writer
