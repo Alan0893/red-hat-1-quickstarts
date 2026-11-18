@@ -1,6 +1,6 @@
 ---
 name: daily-briefing
-description: Read fresh email, chat and calendar for personal briefings. Use for "Show me my email briefing", "Show me my chat briefing", "Show me my calendar briefing", combined briefings, meeting preparation, and briefing schedules.
+description: Keep a daily briefing of the user's email, chat and calendar, updated every few minutes. Use when the user asks for their briefing, what is new in chat or email, meeting preparation, or to set up, change or stop the briefing schedule. Includes "Set up my daily briefing", source-specific briefings, and combined briefings.
 ---
 
 # Daily briefing (Mailpit, Mattermost and Radicale)
