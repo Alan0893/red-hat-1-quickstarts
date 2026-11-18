@@ -8,7 +8,7 @@ from urllib.error import HTTPError
 
 base = 'http://openshell-keycloak-service.saw-keycloak.svc:8080'
 name = os.environ['SAW_USER']
-password = Path('/input/password').read_text().strip()
+password = Path('/input/password').read_text().rstrip('\r\n')
 admin = Path('/admin/username').read_text().strip()
 admin_password = Path('/admin/password').read_text().strip()
 form = urlencode({'grant_type': 'password', 'client_id': 'admin-cli',

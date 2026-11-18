@@ -10,6 +10,10 @@ from pathlib import Path
 UPSTREAM = 'https://github.com/validatedpatterns-sandbox/secure-agent-workspace.git'
 DESTINATION = Path(__file__).resolve().parent / 'tenant/saw'
 PATH_PREFIX = 'automation/gitops/tenant/saw/charts/'
+LOCAL_DIRECTORIES = (
+    'charts/saw-bom/harness/demo-assistant',
+    'charts/saw-bom/profiles/demo-assistant',
+)
 PINS = {
     'registry.redhat.io/rhel9/postgresql-16:latest': 'sha256:9223bb5f0745e66f0e4204ff87d4d1a5283f3726e9b7d9b71d7bdb2a650fc218',
     'registry.access.redhat.com/ubi9/python-311:latest': 'sha256:a0bdb55576fc5b8d6704279307817828ef027e1065533ceba133fe9516003a6c',
@@ -68,8 +72,9 @@ def update(source, ref, destination):
             "    # Append to HCO's generated gates; do not replace its existing feature list.\n"
             '    kubevirt.kubevirt.io/jsonpatch: >-\n'
             '      [{"op":"add","path":"/spec/configuration/developerConfiguration/featureGates/-","value":"EnableVirtioFsConfigVolumes"}]'))
-        # Keep reviewed compatibility fixes until they are included upstream.
-        for patch in json.loads((Path(__file__).parent / 'saw-patches.json').read_text()):
+        # Keep reviewed compatibility fixes on refresh.
+        integration = Path(__file__).resolve().parent
+        for patch in json.loads((integration / 'saw-patches.json').read_text()):
             file = stage / patch['file']
             text = file.read_text()
             if patch['new'] in text:
@@ -77,6 +82,15 @@ def update(source, ref, destination):
             if text.count(patch['old']) != 1:
                 raise ValueError(f"Upstream {patch['file']} changed; review the local compatibility patch")
             file.write_text(text.replace(patch['old'], patch['new']))
+        # Local demo code lives once in the repository's deployable chart.
+        # Carry only these owned directories into the staged upstream refresh.
+        for relative in LOCAL_DIRECTORIES:
+            local, target = DESTINATION / relative, stage / relative
+            if not local.is_dir():
+                raise ValueError(f'Missing local SAW directory {relative}')
+            if target.exists():
+                raise ValueError(f'Upstream {relative} now exists; review the local demo directory')
+            shutil.copytree(local, target)
         for file in stage.rglob('*.yaml'):
             text = file.read_text()
             for image, digest in PINS.items():

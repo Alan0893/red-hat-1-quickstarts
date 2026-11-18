@@ -70,10 +70,19 @@ rules:
     action: approval
     whenCommandMatches:
       - openclaw agents set-identity
+  # Poll yielded commands without allowing process input or termination.
+  - id: process-poll
+    tool: process
+    action: allow
+    whenProcessPoll: true
   # OpenClaw 2026.9.2 runs the hook again for each dispatched target.
   # These discovery rules never replace the target's own named rule.
   - id: tool-search
     tool: tool_search
+    action: allow
+  # MCP search intentionally defers schemas; describing one executes no target.
+  - id: tool-describe
+    tool: tool_describe
     action: allow
   - id: tool-call
     tool: tool_call
@@ -89,6 +98,18 @@ rules:
     action: allow
   - id: briefing-save
     tool: briefing-writer__save_briefing
+    action: allow
+  - id: saw-demo-email
+    tool: mailpit_reader__saw_read_email
+    action: allow
+  - id: saw-demo-chat
+    tool: mattermost_reader__saw_read_chat
+    action: allow
+  - id: saw-demo-calendar
+    tool: calendar_reader__saw_read_calendar
+    action: allow
+  - id: saw-demo-briefing
+    tool: briefing_writer__save_briefing
     action: allow
   - id: read
     tool: read

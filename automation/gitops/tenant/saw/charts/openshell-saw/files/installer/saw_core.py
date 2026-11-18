@@ -1292,7 +1292,11 @@ def describe_harness_tree(files, inline=False, *, warn=lambda _: None):
             bundle_id = json.loads(files["plugin.json"][0].decode("utf-8")).get("name") or name
         except (ValueError, AttributeError):
             pass
+    tools = spec.get("toolAllowlist", [])
+    if not isinstance(tools, list) or any(not isinstance(t, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", t) for t in tools):
+        raise InstallerError(f"harness '{name}': toolAllowlist must contain exact tool names")
     return {
+        "toolAllowlist": tools,
         "name": name,
         "bundleId": bundle_id,
         "agent": spec.get("agent", "openclaw"),

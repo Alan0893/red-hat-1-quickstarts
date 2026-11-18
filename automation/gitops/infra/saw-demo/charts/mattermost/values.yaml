@@ -1,0 +1,85 @@
+# Mattermost in openshell-agents (mirrors the mailpit pattern): the OpenClaw
+# agent reads a channel's messages via the Mattermost REST API :8065, governed
+# by OpenShell policy, and the demo watches the channel in the web UI. Replaces
+# Slack for the GTC demo — no external dependencies.
+enabled: true
+
+# Official Mattermost image. Despite the name, it runs in team edition mode
+# without a license (community edition behaviour).
+image: "mattermost/mattermost-enterprise-edition:10.11.2@sha256:1f2204011fc1118ac585ba238f49131098ee85745ba45ca45372bfe27b5e898e"
+imagePullPolicy: IfNotPresent
+
+# Postgres backing store for the Mattermost server. The same image the
+# upstream Keycloak chart uses: it runs under an arbitrary OpenShift UID, so
+# this database needs no SCC exception (POSTGRESQL_* env, /var/lib/pgsql/data).
+postgresImage: "registry.redhat.io/rhel9/postgresql-16@sha256:9223bb5f0745e66f0e4204ff87d4d1a5283f3726e9b7d9b71d7bdb2a650fc218"
+
+# Mattermost HTTP listener (server default 8065).
+httpPort: 8065
+
+# Postgres listener.
+postgresPort: 5432
+
+mattermostSiteUrl: ""  # Optional public site URL.
+
+# Keep accounts, chat and sessions in PostgreSQL across pod replacements.
+# Mattermost attachments remain ephemeral; leave mattermostSize empty to skip its volume.
+storage:
+  mattermostSize: 1Gi
+  postgresSize: 1Gi
+
+# Optional HTTPS edge Route for the demo UI/API; infrastructure demo opt-in
+# supplies its exact host. Standalone chart installs keep it disabled.
+route:
+  enabled: false
+  host: ""
+
+resources:
+  limits:
+    memory: 512Mi
+    cpu: 500m
+  requests:
+    memory: 256Mi
+    cpu: 100m
+
+postgresResources:
+  limits:
+    memory: 256Mi
+    cpu: 250m
+  requests:
+    memory: 128Mi
+    cpu: 50m
+
+postgresCredentials:
+  database: mattermost
+  user: mmuser
+  password: ""  # Supplied by infrastructure provisioning.
+
+# Security contexts. The Mattermost image's files are owned by uid 2000, so
+# the server runs as runAsUser 2000 with fsGroup 2000 for config.json access;
+# that needs the dedicated saw-demo service account to have anyuid, and the
+# infrastructure bootstrap creates the scoped RoleBinding when opted in.
+# The database needs no exception: the image runs under whatever UID
+# restricted-v2 assigns, and the SCC picks the PVC's fsGroup.
+podSecurityContext:
+  fsGroup: 2000
+securityContext:
+  runAsUser: 2000
+postgresPodSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+postgresSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
+
+# Probe delays: plugin extraction on first start can exceed 30s, so the
+# server's liveness probe waits 240s before the first check.
+livenessInitialDelaySeconds: 240
+readinessInitialDelaySeconds: 10
+postgresLivenessInitialDelaySeconds: 30
+postgresReadinessInitialDelaySeconds: 5
+
+# Dedicated account granted only the SCC needed by these demo images.
+serviceAccountName: saw-demo

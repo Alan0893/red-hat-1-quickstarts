@@ -1,0 +1,6 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "demo-assistant",
+  "version": "0.1.0",
+  "description": "Incremental email, chat and calendar briefings through governed providers."
+}

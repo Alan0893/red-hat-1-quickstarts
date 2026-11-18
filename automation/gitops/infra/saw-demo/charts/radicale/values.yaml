@@ -1,0 +1,45 @@
+# Radicale calendar store; the tenant setup Job populates per-user collections.
+enabled: true
+
+# Radicale image built and published by the upstream project (Kozea). Runs as
+# uid/gid 1000 (user "radicale") and ships curl; storage lives under
+# /var/lib/radicale as filesystem collections.
+image: "kozea/radicale:3.8.2@sha256:81e4ba1904211dff559e3e87a0030673a32a8b945dfc59a311d4d8dfe57238b5"
+imagePullPolicy: IfNotPresent
+
+# Radicale HTTP listener (web UI + CalDAV; server default 5232).
+httpPort: 5232
+
+# Demo-ephemeral: data lives in an emptyDir and is lost on pod restart. Set a
+# size, or leave size empty to skip the volume entirely.
+storage:
+  size: 256Mi
+
+# Optional HTTPS edge Route for the demo UI/API; infrastructure demo opt-in
+# supplies its exact host. Standalone chart installs keep it disabled.
+route:
+  enabled: false
+  host: ""
+
+resources:
+  limits:
+    memory: 128Mi
+    cpu: 100m
+  requests:
+    memory: 32Mi
+    cpu: 10m
+
+# The image's fixed UID requires the dedicated saw-demo SCC exception.
+podSecurityContext:
+  fsGroup: 1000
+securityContext:
+  runAsUser: 1000
+
+# Probe delays: Radicale is a tiny Python server that is ready almost
+# immediately, but the first start creates the storage layout, so give the
+# readiness probe a small grace period. Both are configurable.
+livenessInitialDelaySeconds: 15
+readinessInitialDelaySeconds: 5
+
+# Dedicated account granted only the SCC needed by these demo images.
+serviceAccountName: saw-demo

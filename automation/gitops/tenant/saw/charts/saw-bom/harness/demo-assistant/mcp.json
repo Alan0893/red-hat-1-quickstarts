@@ -1,0 +1,42 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+  "mcpServers": {
+    "mailpit_reader": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "${PLUGIN_ROOT}/mcp/mailpit-reader.mjs"
+      ],
+      "env": {
+        "MAILPIT_AUTHORIZATION": "${MAILPIT_AUTHORIZATION}"
+      }
+    },
+    "mattermost_reader": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "${PLUGIN_ROOT}/mcp/mattermost-reader.mjs"
+      ],
+      "env": {
+        "MM_TOKEN": "${MM_TOKEN}"
+      }
+    },
+    "calendar_reader": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "${PLUGIN_ROOT}/mcp/calendar-reader.mjs"
+      ],
+      "env": {
+        "CALENDAR_AUTHORIZATION": "${CALENDAR_AUTHORIZATION}"
+      }
+    },
+    "briefing_writer": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "${PLUGIN_ROOT}/mcp/save-briefing.mjs"
+      ]
+    }
+  }
+}
