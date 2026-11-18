@@ -128,5 +128,25 @@
     "file": "charts/saw-users/templates/_helpers.tpl",
     "old": "{{- $profiles = $user.profiles -}}\n{{- end -}}\n{{- $bomValues := dict \"profiles\" $profiles -}}\n{{- $imageOverrides := deepCopy ($root.Values.defaults.imageOverrides | default dict) -}}\n{{- range $name, $image := ($user.imageOverrides | default dict) -}}\n{{- $_ := set $imageOverrides $name $image -}}\n",
     "new": "{{- $profiles = $user.profiles -}}\n{{- end -}}\n{{- $bomValues := dict \"profiles\" $profiles -}}\n{{- $demo := deepCopy ($root.Values.defaults.openshellSaw.sourceReaders | default dict) -}}\n{{- if $demo.enabled -}}\n{{- $_ := set $demo \"clusterDomain\" $root.Values.global.clusterDomain -}}\n{{- $_ := set $bomValues \"demoAssistant\" $demo -}}\n{{- end -}}\n{{- $imageOverrides := deepCopy ($root.Values.defaults.imageOverrides | default dict) -}}\n{{- range $name, $image := ($user.imageOverrides | default dict) -}}\n{{- $_ := set $imageOverrides $name $image -}}\n"
+  },
+  {
+    "file": "charts/governance-policy/tool-actions.yaml",
+    "old": "  - id: tool-call\n    tool: tool_call\n    action: allow\n",
+    "new": "  # MCP search intentionally defers schemas; describing one executes no target.\n  - id: tool-describe\n    tool: tool_describe\n    action: allow\n  - id: tool-call\n    tool: tool_call\n    action: allow\n"
+  },
+  {
+    "file": "charts/openshell-saw/files/installer/tool-actions.yaml",
+    "old": "  - id: tool-call\n    tool: tool_call\n    action: allow\n",
+    "new": "  # MCP search intentionally defers schemas; describing one executes no target.\n  - id: tool-describe\n    tool: tool_describe\n    action: allow\n  - id: tool-call\n    tool: tool_call\n    action: allow\n"
+  },
+  {
+    "file": "charts/openshell-saw/files/installer/tool-gate.test.mjs",
+    "old": "\"tool-search\", \"tool-call\",",
+    "new": "\"tool-search\", \"tool-describe\", \"tool-call\","
+  },
+  {
+    "file": "charts/openshell-saw/files/installer/tool-gate.test.mjs",
+    "old": "[\"tool_search\", \"tool_call\",",
+    "new": "[\"tool_search\", \"tool_describe\", \"tool_call\","
   }
 ]

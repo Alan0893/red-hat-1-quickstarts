@@ -83,6 +83,8 @@ class SourceReaderInstallerTests(unittest.TestCase):
                 {'id': 1, 'method': 'tools/list'},
                 {'id': 2, 'method': 'tools/call', 'params': {
                     'name': 'save_briefing', 'arguments': {'markdown': '# Daily briefing\nVerified sources.'}}},
+                {'id': 3, 'method': 'tools/call', 'params': {
+                    'name': 'save_briefing', 'arguments': {}}},
             ]
             result = subprocess.run(['node', str(root / 'mcp/save-briefing.mjs')],
                 input='\n'.join(json.dumps(r) for r in requests) + '\n',
@@ -90,6 +92,12 @@ class SourceReaderInstallerTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             replies = {r['id']: r for r in map(json.loads, result.stdout.splitlines())}
             self.assertEqual([t['name'] for t in replies[1]['result']['tools']], ['save_briefing'])
+            schema = replies[1]['result']['tools'][0]['inputSchema']
+            self.assertEqual(schema['required'], ['markdown'])
+            self.assertEqual(schema['properties']['markdown']['type'], 'string')
+            self.assertFalse(schema['additionalProperties'])
+            self.assertTrue(replies[3]['result']['isError'])
+            self.assertIn('Expected markdown', replies[3]['result']['content'][0]['text'])
             saved = json.loads(replies[2]['result']['content'][0]['text'])
             self.assertTrue(Path(saved['file']).is_relative_to(store))
             self.assertEqual(Path(saved['file']).read_text(), '# Daily briefing\nVerified sources.')
@@ -152,6 +160,8 @@ class SourceReaderInstallerTests(unittest.TestCase):
                     replies = {r['id']: r for r in map(json.loads, result.stdout.splitlines())}
                     self.assertEqual(replies[1]['result']['serverInfo']['name'], server)
                     self.assertEqual({t['name'] for t in replies[2]['result']['tools']}, set(tools))
+                    self.assertEqual(replies[2]['result']['tools'][0]['inputSchema'],
+                                     {'type': 'object', 'properties': {}, 'additionalProperties': False})
                     self.assertTrue(replies[3]['result']['isError'])
                     self.assertIn('accept no arguments', replies[3]['result']['content'][0]['text'])
                     self.assertIn('unknown tool', replies[4]['error']['message'])

@@ -54,7 +54,7 @@ test("the consequential set is the policy file, not the gate source", () => {
   assert.deepEqual(policy.rules.map((rule) => rule.id), [
     "exec-consequential", "exec-git-status", "exec-git-diff", "exec-git-log", "exec-git-show",
     "exec-openclaw-automation-inspect", "exec-openclaw-automation-change", "exec-openclaw-set-identity",
-    "tool-search", "tool-call",
+    "tool-search", "tool-describe", "tool-call",
     "slack-new-messages", "slack-channels", "gmail-new-messages", "briefing-save",
     "saw-demo-email", "saw-demo-chat", "saw-demo-calendar", "saw-demo-briefing",
     "read", "memory-search", "memory-get", "session-status", "sessions-list", "sessions-history",
@@ -112,7 +112,7 @@ test("message sends require approval", () => {
 });
 
 test("briefing discovery and exact read/write targets have named allows", () => {
-  for (const toolName of ["tool_search", "tool_call", "slack-reader__new_messages",
+  for (const toolName of ["tool_search", "tool_describe", "tool_call", "slack-reader__new_messages",
     "slack-reader__channels", "gmail-reader__new_messages", "briefing-writer__save_briefing", "briefing_writer__save_briefing"]) {
     const result = call({ toolName, params: {} });
     assert.equal(result.effect.kind, "allow", toolName);

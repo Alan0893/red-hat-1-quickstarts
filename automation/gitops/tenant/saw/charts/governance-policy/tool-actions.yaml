@@ -75,6 +75,10 @@ rules:
   - id: tool-search
     tool: tool_search
     action: allow
+  # MCP search intentionally defers schemas; describing one executes no target.
+  - id: tool-describe
+    tool: tool_describe
+    action: allow
   - id: tool-call
     tool: tool_call
     action: allow
