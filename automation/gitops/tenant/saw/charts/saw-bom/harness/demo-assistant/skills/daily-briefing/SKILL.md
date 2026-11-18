@@ -1,6 +1,6 @@
 ---
 name: daily-briefing
-description: Keep a daily briefing of the user's email, chat and calendar, updated every few minutes. Use when the user asks for their briefing, what is new in chat or email, meeting preparation, or to set up, change or stop the briefing schedule. Includes "Set up my daily briefing", source-specific briefings, and combined briefings.
+description: For email, chat, calendar or daily briefings, read this skill and execute the requested readers. For an email briefing, call tool_call with id mcp:mailpit_reader:mailpit_reader__saw_read_email and args {}. For chat use mcp:mattermost_reader:mattermost_reader__saw_read_chat; for calendar use mcp:calendar_reader:calendar_reader__saw_read_calendar, each with args {}. Tool search only discovers tools; it does not read a source. Use this skill for combined briefings, meeting preparation and briefing schedules.
 ---
 
 # Daily briefing (Mailpit, Mattermost and Radicale)
@@ -110,7 +110,9 @@ had no errors. A source-only question does not request a save or a schedule.
 
 When the user asks to set up (or turn on) the daily briefing:
 
-1. Use `exec` to run `openclaw cron list --json`.
+1. Use `exec` to run `openclaw cron list --json` on the gateway or default host.
+   If it returns a running process, poll the returned session with `process`
+   until it finishes. If it fails, report the error and do not create a job.
 2. If a job named `daily-briefing` already exists, keep it and tell the user
    it is already scheduled. Do not add another job.
 3. Otherwise tell the user that creating the schedule requires their approval,

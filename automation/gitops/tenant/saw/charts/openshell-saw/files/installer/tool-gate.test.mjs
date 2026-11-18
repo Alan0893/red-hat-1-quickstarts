@@ -54,7 +54,7 @@ test("the consequential set is the policy file, not the gate source", () => {
   assert.deepEqual(policy.rules.map((rule) => rule.id), [
     "exec-consequential", "exec-git-status", "exec-git-diff", "exec-git-log", "exec-git-show",
     "exec-openclaw-automation-inspect", "exec-openclaw-automation-change", "exec-openclaw-set-identity",
-    "tool-search", "tool-describe", "tool-call",
+    "process-poll", "tool-search", "tool-describe", "tool-call",
     "slack-new-messages", "slack-channels", "gmail-new-messages", "briefing-save",
     "saw-demo-email", "saw-demo-chat", "saw-demo-calendar", "saw-demo-briefing",
     "read", "memory-search", "memory-get", "session-status", "sessions-list", "sessions-history",
@@ -63,6 +63,19 @@ test("the consequential set is the policy file, not the gate source", () => {
   assert.equal(policy.defaultAction, "deny");
   const installerCopy = readFileSync(path.join(here, "tool-actions.yaml"), "utf8");
   assert.equal(installerCopy, policyText);
+});
+
+test("process polling is allowed but process input and termination remain denied", () => {
+  assert.equal(call({ toolName: "process", params: { action: "poll", sessionId: "session-1" } }).effect.kind, "allow");
+  for (const params of [{ action: "poll" }, { action: "poll", sessionId: "" },
+    { action: "write", sessionId: "session-1", data: "unsafe" },
+    { action: "kill", sessionId: "session-1" }, { action: "list" }]) {
+    assert.equal(call({ toolName: "process", params }).effect.kind, "deny", JSON.stringify(params));
+  }
+  for (const condition of ["whenProcessPoll: false", "whenProcessPol: true", ""]) {
+    const invalid = `version: 1\ndefaultAction: deny\nrules:\n  - id: unsafe\n    tool: process\n    action: allow\n    ${condition}\n`;
+    assert.equal(call({ policyText: invalid, toolName: "process", params: { action: "kill", sessionId: "x" } }).effect.kind, "deny");
+  }
 });
 
 test("an ordinary tool call is allowed and audited with the user and task", () => {
