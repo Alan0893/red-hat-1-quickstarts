@@ -21,18 +21,72 @@
     _saw_mirror_job: "saw-golden-mirror-{{ _saw_run_id }}"
     _saw_registry_destination: "image-registry.openshift-image-registry.svc:5000/{{ saw_prepare_namespace }}/{{ saw_prepare_mirror_repository }}:{{ _saw_tag }}"
 
-- name: Wait for the infrastructure namespaces
+# The vault and openshell-agents namespaces are created by the infra bootstrap
+# Application, so check that it rendered before waiting on them.
+- name: Wait for Argo CD to reconcile the infra bootstrap Application
   kubernetes.core.k8s_info:
-    api_version: v1
-    kind: Namespace
-    name: "{{ item }}"
-  register: _saw_namespace
-  retries: "{{ saw_prepare_retries }}"
+    api_version: argoproj.io/v1alpha1
+    kind: Application
+    namespace: "{{ saw_prepare_bootstrap_namespace }}"
+    name: "{{ saw_prepare_bootstrap_application }}"
+  register: _saw_bootstrap_app
+  retries: "{{ saw_prepare_bootstrap_retries }}"
   delay: "{{ saw_prepare_delay }}"
-  until: _saw_namespace.resources | length > 0
-  loop:
-    - "{{ saw_prepare_vault_namespace }}"
-    - "{{ saw_prepare_namespace }}"
+  until: >-
+    _saw_bootstrap_app.resources | default([]) | length > 0 and
+    ((_saw_bootstrap_app.resources[0].status.sync.status | default('Unknown')) != 'Unknown' or
+     (_saw_bootstrap_app.resources[0].status.conditions | default([]) | selectattr('type', 'search', 'Error$') | list | length > 0))
+
+- name: Fail early when the infra bootstrap Application cannot render or sync
+  vars:
+    _saw_bootstrap_errors: >-
+      {{ _saw_bootstrap_app.resources[0].status.conditions | default([])
+         | selectattr('type', 'search', 'Error$') | list }}
+  ansible.builtin.fail:
+    msg: >-
+      Infra bootstrap Application {{ saw_prepare_bootstrap_application }} in
+      {{ saw_prepare_bootstrap_namespace }} reports
+      {{ _saw_bootstrap_errors | map(attribute='type') | join(', ') }}:
+      {{ _saw_bootstrap_errors | map(attribute='message') | join(' | ') }}
+  when: _saw_bootstrap_errors | length > 0
+
+- name: Wait for the infrastructure namespaces
+  block:
+    - name: Wait for the infrastructure namespaces created by the bootstrap
+      kubernetes.core.k8s_info:
+        api_version: v1
+        kind: Namespace
+        name: "{{ item }}"
+      register: _saw_namespace
+      retries: "{{ saw_prepare_retries }}"
+      delay: "{{ saw_prepare_delay }}"
+      until: _saw_namespace.resources | length > 0
+      loop:
+        - "{{ saw_prepare_vault_namespace }}"
+        - "{{ saw_prepare_namespace }}"
+  rescue:
+    - name: Read the infra bootstrap Application for diagnosis
+      kubernetes.core.k8s_info:
+        api_version: argoproj.io/v1alpha1
+        kind: Application
+        namespace: "{{ saw_prepare_bootstrap_namespace }}"
+        name: "{{ saw_prepare_bootstrap_application }}"
+      register: _saw_bootstrap_diag
+      ignore_errors: true
+
+    - name: Report why the infrastructure namespaces are missing
+      vars:
+        _saw_diag_status: "{{ ((_saw_bootstrap_diag.resources | default([])) + [{}])[0].status | default({}) }}"
+      ansible.builtin.fail:
+        msg: >-
+          Namespaces {{ saw_prepare_vault_namespace }} and {{ saw_prepare_namespace }} are created by the
+          infra bootstrap Application {{ saw_prepare_bootstrap_application }} (saw.enabled must be true).
+          Missing: {{ _saw_namespace.results | default([]) | rejectattr('resources', 'truthy') | map(attribute='item') | join(', ') }}.
+          Bootstrap sync={{ _saw_diag_status.sync.status | default('not found') }},
+          health={{ _saw_diag_status.health.status | default('not found') }},
+          operation={{ _saw_diag_status.operationState.phase | default('none') }}
+          {{ _saw_diag_status.operationState.message | default('') }}
+          {{ _saw_diag_status.conditions | default([]) | map(attribute='message') | join(' | ') }}
 
 - name: Bootstrap the dedicated workshop Vault before seeding secrets
   ansible.builtin.include_tasks: vault.yml

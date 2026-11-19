@@ -155,6 +155,7 @@ if info:
     if kind == 'ConfigMap': resources = [{'data': {'ca-bundle.crt': 'test-ca'}}]
     elif kind == 'Secret': resources = [{'data': {'token': 'fake'}}]
     elif kind == 'Job': resources = [{'status': {'succeeded': 1}}]
+    elif kind == 'Pod': resources = [{'status': {'phase': 'Running', 'containerStatuses': [{'started': True}]}}]
     elif kind == 'Application': resources = [{'status': {'health': {'status': 'Healthy'}, 'sync': {'status': 'OutOfSync'}, 'operationState': {'phase': 'Succeeded'}}}]
     elif kind == 'ImageStreamTag': resources = [{'image': {'metadata': {'name': digest}}}] if os.path.exists(os.environ['SAW_TEST_MIRRORED']) or os.environ.get('SAW_TEST_EXISTS') == '1' else []
     else: resources = [{}]
