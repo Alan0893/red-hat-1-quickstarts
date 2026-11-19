@@ -157,7 +157,7 @@ def previous_child(application, appset, owner):
                        and ref.get("name") == appset and ref.get("controller") is True for ref in meta.get("ownerReferences", []))):
         raise WorkspaceError("cannot verify existing workspace Application ownership")
     source = application["spec"]["source"]
-    if source.get("path") != "charts/saw-users":
+    if source.get("path") != "automation/gitops/tenant/saw/charts/saw-users":
         raise WorkspaceError("unexpected workspace Application source")
     values = json.loads(source["helm"]["values"])
     users = values["users"]

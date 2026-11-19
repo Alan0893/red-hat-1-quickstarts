@@ -136,7 +136,7 @@ spec:
   source:
     repoURL: {{ $g.repoURL | quote }}
     targetRevision: {{ $item.revision | quote }}
-    path: charts/{{ index $c 0 }}
+    path: automation/gitops/tenant/saw/charts/{{ index $c 0 }}
     helm:
       {{- if and (eq $key "gateway") (eq $stack.identity.revision $g.targetRevision) (eq $item.revision $g.targetRevision) }}
       # The identity bootstrap independently checks both discovery endpoints

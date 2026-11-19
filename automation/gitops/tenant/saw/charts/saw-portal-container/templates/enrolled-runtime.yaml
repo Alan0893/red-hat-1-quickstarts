@@ -98,7 +98,7 @@ spec:
   source:
     repoURL: {{ .Values.global.repoURL | quote }}
     targetRevision: {{ $e.revision | quote }}
-    path: charts/saw-kubernetes-controller
+    path: automation/gitops/tenant/saw/charts/saw-kubernetes-controller
     helm:
       releaseName: {{ $u }}
       valuesObject:

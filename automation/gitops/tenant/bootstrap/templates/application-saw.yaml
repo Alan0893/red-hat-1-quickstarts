@@ -51,6 +51,10 @@
 {{- $profile := ternary "custom-inference" ($saw.profile | default "data-science") $seeded -}}
 {{- $_ := set $user "ownerSubject" (required "saw.ownerSubject is required for container deployment" $saw.ownerSubject) -}}
 {{- $_ := set $user "profiles" (list $profile) -}}
+{{- if $seeded -}}
+{{- /* The runtime takes the model from public inputs, never from the Vault Secret. */ -}}
+{{- $_ := set $user "modelInputs" (dict "inference.model" (required "saw.inferenceSeed.secretData.model is required" (($saw.inferenceSeed.secretData | default dict).model))) -}}
+{{- end -}}
 {{- $_ := set $user "values" (dict "deployment" (dict "mode" "container")) -}}
 {{- /* The shared site; saw_prepare discovered the network rules and issuer. */ -}}
 {{- $site = fromYaml (.Files.Get "files/container-defaults.yaml") -}}

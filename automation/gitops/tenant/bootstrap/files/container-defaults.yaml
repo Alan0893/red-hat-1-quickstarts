@@ -8,6 +8,9 @@
 governanceNamespace: openshell-agents
 automaticEnrollment:
   enabled: true
+  # SAW grants pull access to an in-cluster ImageStream here. Our runtime image
+  # is published, so those grants are unused, but the namespace must exist.
+  buildNamespace: openshell-agents
   autoApprove: true
   resources:
     requests:

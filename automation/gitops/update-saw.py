@@ -47,7 +47,13 @@ def update(source, ref, destination):
         shutil.copytree(checkout / 'charts', stage / 'charts')
         shutil.copytree(checkout / 'image-builder-charts/helm', stage / 'image-builders')
         shutil.copytree(checkout / 'overrides/governance-profiles', stage / 'governance-profiles')
-        for relative in ['charts/saw-users/templates/applications.yaml', 'charts/openshell-rhdh/templates/applicationset.yaml']:
+        # Applications the charts create point at upstream's charts/ directory;
+        # here the charts live under PATH_PREFIX. The rest are container mode.
+        for relative in ['charts/saw-users/templates/applications.yaml', 'charts/openshell-rhdh/templates/applicationset.yaml',
+                         'charts/saw-users/templates/projector.yaml', 'charts/saw-portal-container/templates/stack.yaml',
+                         'charts/saw-portal-container/templates/relay.yaml', 'charts/saw-portal-container/templates/enrolled-runtime.yaml',
+                         'charts/saw-users/templates/_helpers.tpl', 'charts/saw-users/files/workspace.py',
+                         'charts/openshell-rhdh/files/workspace.py']:
             file = stage / relative
             original = file.read_text()
             updated = original.replace('"charts/', '"' + PATH_PREFIX).replace('path: charts/', 'path: ' + PATH_PREFIX)

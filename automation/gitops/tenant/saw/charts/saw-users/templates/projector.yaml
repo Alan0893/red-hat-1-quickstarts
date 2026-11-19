@@ -303,7 +303,7 @@ spec:
       source:
         repoURL: {{ .Values.global.repoURL | quote }}
         targetRevision: '{{ "{{" }} .revision {{ "}}" }}'
-        path: charts/saw-users
+        path: automation/gitops/tenant/saw/charts/saw-users
         helm:
           releaseName: 'workspace-{{ "{{" }} .name {{ "}}" }}'
           values: '{{ "{{" }} .workspaceValues {{ "}}" }}'

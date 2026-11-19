@@ -428,7 +428,7 @@ spec:
     # hand (e.g. while cleaning up an older install) are restored.
     automated:
       selfHeal: true
-      {{- if and (eq .path "charts/saw-portal-container") (eq (int ($user.lifecycleVersion | default 0)) 1) }}
+      {{- if and (eq .path "automation/gitops/tenant/saw/charts/saw-portal-container") (eq (int ($user.lifecycleVersion | default 0)) 1) }}
       # Retire superseded publication Jobs. Audit archives opt out of prune and delete.
       prune: true
       {{- end }}
