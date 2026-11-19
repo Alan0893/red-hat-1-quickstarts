@@ -117,13 +117,14 @@
     api_version: v1
     kind: ConfigMap
     namespace: "{{ saw_tenant_prepare_lease_namespace }}"
-    label_selector: "saw.redhat.com/tenant={{ guid }},app.kubernetes.io/part-of=saw-anp-priority"
+    label_selectors:
+      - "saw.redhat.com/tenant={{ guid }}"
+      - app.kubernetes.io/part-of=saw-anp-priority
   register: _saw_own_lease
 
-- name: Reserve the lowest free priority
+- name: Find the priorities nobody holds yet
   when: _saw_own_lease.resources | length == 0
   vars:
-    # Re-read on every retry, so a 409 from a racing tenant moves on to the next number.
     _saw_leases: >-
       {{ query('kubernetes.core.k8s', api_version='v1', kind='ConfigMap',
                namespace=saw_tenant_prepare_lease_namespace,
@@ -132,38 +133,25 @@
     _saw_anps: >-
       {{ query('kubernetes.core.k8s', api_version='policy.networking.k8s.io/v1alpha1',
                kind='AdminNetworkPolicy') | map(attribute='spec.priority') | map('int') | list }}
-    _saw_candidate: >-
+  ansible.builtin.set_fact:
+    _saw_free: >-
       {{ range(saw_tenant_prepare_priority_first | int, saw_tenant_prepare_priority_last | int + 1)
-         | reject('in', _saw_leases + _saw_anps) | first }}
-  ansible.builtin.uri:
-    url: "{{ saw_tenant_prepare_api_url }}/api/v1/namespaces/{{ saw_tenant_prepare_lease_namespace }}/configmaps"
-    method: POST
-    headers:
-      Authorization: "Bearer {{ saw_tenant_prepare_api_token }}"
-    body_format: json
-    body:
-      apiVersion: v1
-      kind: ConfigMap
-      metadata:
-        name: "{{ saw_tenant_prepare_lease_prefix }}{{ _saw_candidate }}"
-        labels:
-          app.kubernetes.io/part-of: saw-anp-priority
-          saw.redhat.com/tenant: "{{ guid }}"
-      data:
-        priority: "{{ _saw_candidate | string }}"
-        user: "{{ saw_tenant_prepare_username }}"
-    status_code: [201, 409]
-    validate_certs: "{{ saw_tenant_prepare_validate_certs }}"
-  register: _saw_new_lease
-  retries: 20
-  delay: 2
-  until: _saw_new_lease.status == 201
+         | reject('in', _saw_leases + _saw_anps) | list }}
+
+# Try them in order; a 409 means another tenant just took that one.
+- name: Start with the lowest free priority
+  when: _saw_own_lease.resources | length == 0
+  ansible.builtin.set_fact:
+    _saw_try: 0
+
+- name: Reserve the lowest free priority
+  when: _saw_own_lease.resources | length == 0
+  ansible.builtin.include_tasks: reserve.yml
 
 - name: Remember the tenant's AdminNetworkPolicy priority
+  when: _saw_own_lease.resources | length > 0
   ansible.builtin.set_fact:
-    saw_tenant_anp_priority: >-
-      {{ (_saw_own_lease.resources[0].data.priority if _saw_own_lease.resources | length > 0
-          else _saw_new_lease.json.data.priority) | int }}
+    saw_tenant_anp_priority: "{{ _saw_own_lease.resources[0].data.priority | int }}"
 
 - name: Report the container workspace inputs
   ansible.builtin.debug:
