@@ -1,0 +1,12 @@
+---
+- name: Prepare the tenant's container workspace
+  ansible.builtin.include_tasks: provision.yml
+  when:
+    - ACTION | default('provision') == 'provision'
+    - saw_tenant_prepare_enabled | bool
+
+- name: Release the tenant's container workspace reservations
+  ansible.builtin.include_tasks: destroy.yml
+  when:
+    - ACTION | default('provision') == 'destroy'
+    - saw_tenant_prepare_enabled | bool

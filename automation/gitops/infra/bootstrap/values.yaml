@@ -42,6 +42,14 @@ saw:
     values: {}
   externalSecrets:
     values: {}
+  # Container workspaces (SAW deployment.mode: container). Off by default so
+  # VM-only clusters are unchanged. Turns on Argo CD's ApplicationSet
+  # controller, which generates each container workspace's applications.
+  container:
+    enabled: false
+    # The cluster-wide Agent Sandbox controller and CRDs. Leave on unless the
+    # platform already provides a compatible installation.
+    agentSandbox: true
   inferenceSeed:
     enabled: false
     sourceSecret: saw-inference

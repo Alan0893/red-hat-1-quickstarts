@@ -1,0 +1,11 @@
+---
+# The OpenShell account is left in place, like VM tenants' accounts.
+- name: Release the tenant's AdminNetworkPolicy priority
+  kubernetes.core.k8s:
+    state: absent
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ saw_tenant_prepare_lease_namespace }}"
+    label_selectors:
+      - "saw.redhat.com/tenant={{ guid }}"
+      - app.kubernetes.io/part-of=saw-anp-priority

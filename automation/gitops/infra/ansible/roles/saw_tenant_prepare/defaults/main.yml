@@ -1,0 +1,24 @@
+---
+# Runs only for container workspaces; VM tenants keep the in-cluster account Job.
+saw_tenant_prepare_enabled: "{{ (saw_deployment_mode | default('vm')) == 'container' }}"
+
+# The tenant's OpenShell (Keycloak "openshell" realm) account.
+saw_tenant_prepare_username: "user-{{ guid }}"
+saw_tenant_prepare_password: "{{ saw_user_password }}"
+saw_tenant_prepare_keycloak_namespace: saw-keycloak
+saw_tenant_prepare_keycloak_admin_secret: openshell-keycloak-initial-admin
+saw_tenant_prepare_keycloak_url: >-
+  https://openshell-keycloak-ingress-saw-keycloak.{{ openshift_cluster_ingress_domain }}
+saw_tenant_prepare_keycloak_realm: openshell
+
+# Each container workspace needs its own AdminNetworkPolicy priority (0-99).
+# A ConfigMap named <prefix><priority> reserves it; creating one that already
+# exists fails with 409, so two tenants provisioning at once never share one.
+saw_tenant_prepare_lease_namespace: openshell-agents
+saw_tenant_prepare_lease_prefix: saw-anp-priority-
+saw_tenant_prepare_priority_first: 20
+saw_tenant_prepare_priority_last: 99
+
+saw_tenant_prepare_api_url: "{{ sandbox_openshift_api_url }}"
+saw_tenant_prepare_api_token: "{{ cluster_admin_agnosticd_sa_token | trim }}"
+saw_tenant_prepare_validate_certs: false
