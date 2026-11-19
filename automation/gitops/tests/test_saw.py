@@ -299,7 +299,9 @@ class SawRefreshTests(unittest.TestCase):
                      'charts/openshell-keycloak/values.yaml': 'image: registry.access.redhat.com/ubi9/python-311:latest\n',
                      'charts/openshell-keycloak/templates/postgres.yaml': 'username: {{ .Values.postgres.username }}\npassword: {{ .Values.postgres.password }}\n',
                      'image-builder-charts/helm/example/Chart.yaml': 'name: example\nversion: 0.1.0\n',
-                     'overrides/governance-profiles/kustomization.yaml': 'kind: Kustomization\n'}
+                     'overrides/governance-profiles/kustomization.yaml': 'kind: Kustomization\n',
+                     # The refresh runs upstream's catalog generator; the fixture has no profiles.
+                     'scripts/saw-profile-catalog.py': 'raise SystemExit(0)\n'}
             patches = json.loads((ROOT / 'saw-patches.json').read_text())
             for patch in patches:
                 files[patch['file']] = (ROOT / 'tenant/saw' / patch['file']).read_text()

@@ -97,21 +97,11 @@ export function parsePolicy(text) {
   if (!ACTIONS.has(defaultAction)) throw new Error("defaultAction must be allow, deny, or approval");
   const ids = new Set();
   for (const rule of rules) {
-    if (Object.keys(rule).some((key) => !["id", "tool", "action", "whenCommandMatches", "whenProcessPoll"].includes(key))) {
-      throw new Error("unknown rule field");
-    }
     if (typeof rule.id !== "string" || !rule.id) throw new Error("every rule needs an id");
     if (ids.has(rule.id)) throw new Error(`duplicate rule id ${rule.id}`);
     ids.add(rule.id);
     if (typeof rule.tool !== "string" || !rule.tool) throw new Error(`rule ${rule.id} needs a tool`);
     if (!ACTIONS.has(rule.action)) throw new Error(`rule ${rule.id} has an unknown action`);
-    if (rule.whenProcessPoll !== undefined &&
-        (rule.tool !== "process" || rule.whenProcessPoll !== "true" || rule.action !== "allow")) {
-      throw new Error(`rule ${rule.id} has an invalid process condition`);
-    }
-    if (rule.tool === "process" && rule.action === "allow" && rule.whenProcessPoll !== "true") {
-      throw new Error(`rule ${rule.id} must restrict process access`);
-    }
     if (rule.whenCommandMatches !== undefined) {
       if (!Array.isArray(rule.whenCommandMatches) || rule.whenCommandMatches.length === 0) {
         throw new Error(`rule ${rule.id} has an empty whenCommandMatches`);
@@ -253,10 +243,8 @@ function blocked(input, rule, reason, task = { id: null, title: null }) {
   };
 }
 
-function ruleMatches(rule, tool, command, params) {
+function ruleMatches(rule, tool, command) {
   if (rule.tool !== tool) return false;
-  if (rule.whenProcessPoll === "true" &&
-      (params?.action !== "poll" || typeof params?.sessionId !== "string" || !params.sessionId.trim())) return false;
   if (!rule.whenCommandMatches) return true;
   return rule.whenCommandMatches.some((needle) => {
     const normalized = needle.toLowerCase().replace(/\s+/g, " ").trim();
@@ -294,7 +282,7 @@ export function decide(input) {
   const exec = tool === "exec" ? normalizedExec(rawCommand) : null;
   if (exec?.error) return blocked(input, exec.error, `Tool call blocked: ${exec.error}`, task);
   const command = exec ? exec.command : rawCommand;
-  const rule = policy.rules.find((item) => ruleMatches(item, tool, command, input.params));
+  const rule = policy.rules.find((item) => ruleMatches(item, tool, command));
   const action = rule ? rule.action : policy.defaultAction;
   const ruleId = rule ? rule.id : "default";
   return {

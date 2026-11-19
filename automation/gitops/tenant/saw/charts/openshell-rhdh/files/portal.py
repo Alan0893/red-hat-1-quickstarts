@@ -92,6 +92,11 @@ _workspace = _importlib.module_from_spec(_workspace_spec)
 _workspace_spec.loader.exec_module(_workspace)
 
 
+_preflight_spec = _importlib.spec_from_file_location("saw_preflight", _Path(__file__).with_name("preflight.py"))
+_preflight = _importlib.module_from_spec(_preflight_spec)
+_preflight_spec.loader.exec_module(_preflight)
+
+
 def _project(function, *args, **kwargs):
     try:
         return function(*args, **kwargs)
@@ -382,29 +387,93 @@ def check_user(user):
 
 
 # Request policy is operator-owned, never taken from a form or registry entry.
-DEPLOYMENT_MODES = ("vm", "container")
+KUBERNETES_MODES = ("container", "kata")
+DEPLOYMENT_MODES = ("vm", *KUBERNETES_MODES)
 # A renderable foundation is not a qualified provisioning/readiness adapter.
 # Expand only when runtime lifecycle, BOM and readiness are implemented.
 PROVISIONABLE_MODES = ("vm",)
 
 
-def container_site(user):
-    """Trusted site inventory, never names/URLs supplied by the request."""
+def _deep_merge(base, over):
+    out = json.loads(json.dumps(base))
+    for key, value in over.items():
+        out[key] = (_deep_merge(out[key], value) if isinstance(value, dict) and isinstance(out.get(key), dict)
+                    else json.loads(json.dumps(value)))
+    return out
+
+
+def container_defaults():
+    """Operator-owned shared site (saw-users containerDefaults); empty when unset."""
+    defaults = json.loads(os.environ.get("SAW_CONTAINER_DEFAULTS") or "{}")
+    return defaults if isinstance(defaults, dict) else {}
+
+
+_OWNER_SUBJECTS = {}
+
+
+def owner_subject(user):
+    """The owner's enabled Keycloak id from the owner directory, or "" when unavailable."""
+    if user not in _OWNER_SUBJECTS:
+        url = os.environ.get("KEYCLOAK_URL", "")
+        try:
+            with open(env("KEYCLOAK_SECRET_FILE"), encoding="utf-8") as credential:
+                ids = keycloak_user_ids(url.rstrip("/"), env("KEYCLOAK_REALM"), env("KEYCLOAK_CLIENT_ID"),
+                                        credential.read().strip(), [user],
+                                        os.environ.get("KEYCLOAK_SKIP_VERIFY") == "true") if url else {}
+        except (PortalError, OSError, ValueError, KeyError) as exc:
+            log(f"WARN: owner lookup for {user} failed ({exc})")
+            return ""
+        if not ids.get(user):
+            return ""  # not cached: the account may be created later
+        _OWNER_SUBJECTS[user] = ids[user]
+    return _OWNER_SUBJECTS[user]
+
+
+def container_site(user, subject=None):
+    """Trusted site inventory, never names/URLs supplied by the request.
+
+    An owner's own containerSites entry is layered over the shared
+    containerDefaults. A site from the defaults takes the owner's subject from
+    the registry entry or the owner directory, and unset chart revisions follow
+    the pattern branch, as for saw-users entries."""
     sites = json.loads(os.environ.get("SAW_CONTAINER_SITES", "{}"))
     site = sites.get(user)
+    defaults = container_defaults()
+    if defaults and (site is None or isinstance(site, dict)):
+        site = _deep_merge(defaults, site or {})
+        if not site.get("subject"):
+            site["subject"] = subject or owner_subject(user)
+        revision = os.environ.get("SAW_TARGET_REVISION", "")
+        if revision:
+            for item in (site.get("stack") or {}).values():
+                if isinstance(item, dict) and not item.get("revision"):
+                    item["revision"] = revision
+            automatic = site.get("automaticEnrollment")
+            if isinstance(automatic, dict):
+                automatic.setdefault("revision", revision)
+                if isinstance(automatic.get("relay"), dict):
+                    automatic["relay"].setdefault("revision", revision)
     if not isinstance(site, dict) or not re.fullmatch(
             r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", str(site.get("subject", ""))):
         return None
     return site
 
 
-def container_profiles(site):
+def auto_approved(site):
+    automatic = (site or {}).get("automaticEnrollment", {})
+    return isinstance(automatic, dict) and automatic.get("autoApprove") is True
+
+
+def container_profiles(site, catalog=None):
+    """Profiles an owner may request: every catalog profile on an autoApprove site."""
+    if auto_approved(site):
+        return {profile: "" for profile in (catalog or {})}
     automatic = site.get("automaticEnrollment", {})
     return automatic.get("approvedProfiles", {})
 
 
 def registered_links(entry, catalog, domain):
-    if entry_deployment_mode(entry) == "container":
+    if entry_deployment_mode(entry) in KUBERNETES_MODES:
         if entry.get("desiredState") == "Stopped":
             return []
         return sandbox_ui_links(entry["name"], entry.get("profiles", []), catalog, domain) if domain else []
@@ -422,7 +491,8 @@ def container_status(k8s, user, entry, argo_ns, domain, ping, catalog=None):
             if exc.code == 403:
                 return {}
             raise
-    return _workspace.container_status(read, normalized, container_site(user), argo_ns, domain, ping, catalog)
+    return _workspace.container_status(read, normalized, container_site(user, entry.get("ownerSubject")),
+                                       argo_ns, domain, ping, catalog)
 
 
 def installation_id(user, registration):
@@ -440,13 +510,13 @@ def deployment_modes():
     if (not isinstance(modes, list) or not modes or "vm" not in modes
             or any(not isinstance(m, str) or m not in DEPLOYMENT_MODES for m in modes)
             or len(set(modes)) != len(modes)):
-        raise PortalError("SAW_DEPLOYMENT_MODES must contain vm and unique supported modes: vm, container")
+        raise PortalError("SAW_DEPLOYMENT_MODES must contain vm and unique supported modes: vm, container, kata")
     return tuple(modes)
 
 
 def validate_deployment_mode(mode):
     if not isinstance(mode, str) or mode not in DEPLOYMENT_MODES:
-        raise PortalError("deploymentMode must be one of vm, container")
+        raise PortalError("deploymentMode must be one of vm, container, kata")
     return mode
 
 
@@ -483,7 +553,7 @@ def parse_request(data, catalog):
     if profile not in catalog:
         raise PortalError(f"unknown profile {profile!r}; available: {', '.join(sorted(catalog))}")
     secrets, missing = {}, []
-    allowed = catalog[profile].get("dedicatedEndpointSecrets") if request_deployment_mode(data) == "container" else None
+    allowed = catalog[profile].get("dedicatedEndpointSecrets") if request_deployment_mode(data) in KUBERNETES_MODES else None
     for name, spec in sorted(catalog[profile].get("secrets", {}).items()):
         if allowed is not None and name not in allowed:
             continue
@@ -640,7 +710,7 @@ def put_configmap(k8s, ns, name, data, labels=None, resource_version=None, deplo
         raise PortalError(f"{name} changed while this request ran (a delete?); request it again")
     if deployment_mode is not None:
         assert_mode_unchanged(read_entry(current), deployment_mode)
-        if deployment_mode == "container":
+        if deployment_mode in KUBERNETES_MODES:
             raise PortalError("concurrent container registration; refusing to replace its identity")
     put_configmap(k8s, ns, name, data, labels, current["metadata"]["resourceVersion"], deployment_mode)
 
@@ -724,6 +794,181 @@ def check_container_identity(user, site):
                                 credential.read().strip(), [user], insecure=False)
     if ids.get(user) != site["subject"]:
         raise PortalError("current identity does not match the enrolled container owner")
+
+
+def _approved_profile_reference(site, profile):
+    boundaries = site.get("profileBoundaries", {}) if isinstance(site, dict) else {}
+    boundary = boundaries.get(profile) if isinstance(boundaries, dict) else None
+    if isinstance(boundary, dict) and isinstance(boundary.get("reference"), dict):
+        return boundary["reference"]
+    automatic = site.get("automaticEnrollment", {}) if isinstance(site, dict) else {}
+    return automatic.get("reference") if isinstance(automatic, dict) else None
+
+
+def check_live_boundary_approval(k8s, user, site, mode, profile, catalog):
+    """Check the existing namespace policy against the owner-approved hash."""
+    automatic = site.get("automaticEnrollment", {}) if isinstance(site, dict) else {}
+    if (not isinstance(automatic, dict) or not automatic or automatic.get("enabled") is False
+            or automatic.get("autoApprove") is True):
+        return  # autoApprove: enrollment publishes the first observed boundary
+    reference = _approved_profile_reference(site, profile)
+    try:
+        _preflight.verify_boundary_reference(reference, mode)
+    except _preflight.PreflightError as exc:
+        raise PortalError("Workspace preflight failed: " + exc.reason) from None
+    namespace_name = "saw-" + user
+    try:
+        namespace = k8s.call("GET", "/api/v1/namespaces/" + namespace_name, ok404=True)
+    except Exception:
+        raise PortalError("Workspace preflight failed: BoundaryNamespaceUnavailable") from None
+    if namespace is None:
+        # A first registration has no generated namespace policies yet. The
+        # site reference is complete and valid; shared live prerequisites were
+        # checked above. Compare exact policy hashes after Argo creates them.
+        return
+    labels = namespace.get("metadata", {}).get("labels", {})
+    if labels.get(PORTAL_NS_LABEL) != "true":
+        # check_namespace_is_ours reports this case before any credential write.
+        return
+    registration = labels.get("saw.redhat.com/registration", "")
+    owner_id = labels.get("saw.redhat.com/runtime-owner", "")
+    if (not GENERATION_RE.fullmatch(registration)
+            or owner_id != installation_id(user, registration)):
+        raise PortalError("Workspace preflight failed: BoundaryApprovalIdentityMismatch")
+    profiles = (catalog.get("profiles", catalog) if isinstance(catalog, dict) else {})
+    profile_data = profiles.get(profile) if isinstance(profiles, dict) else None
+    if not isinstance(profile_data, dict):
+        raise PortalError("Workspace preflight failed: BoundaryApprovalInvalid")
+    slots = sorted(sandbox_targets(user, registration, profile_data))
+    if not slots:
+        raise PortalError("Workspace preflight failed: BoundaryApprovalInvalid")
+
+    def resource(path, key, normalize=False):
+        try:
+            obj = k8s.call("GET", path, ok404=True)
+        except Exception:
+            raise PortalError("Workspace preflight failed: BoundaryPolicyUnavailable") from None
+        if not isinstance(obj, dict) or not isinstance(obj.get("spec"), dict):
+            raise PortalError("Workspace preflight failed: BoundaryPolicyUnavailable")
+        spec = obj["spec"]
+        if normalize:
+            digest = _preflight.validation_policy_digest(
+                spec, user, registration, owner_id, slots)
+        else:
+            digest = _preflight.fingerprint(spec)
+        try:
+            _preflight.verify_boundary_hash(reference, key, digest)
+        except _preflight.PreflightError as exc:
+            raise PortalError("Workspace preflight failed: " + exc.reason + ":" + key) from None
+        if obj.get("kind") == "ValidatingAdmissionPolicy":
+            status = obj.get("status", {})
+            meta = obj.get("metadata", {})
+            if (status.get("observedGeneration") != meta.get("generation")
+                    or "typeChecking" not in status
+                    or status["typeChecking"].get("expressionWarnings")):
+                raise PortalError("Workspace preflight failed: AdmissionUnavailable:" + key)
+
+    admission = "/apis/admissionregistration.k8s.io/v1"
+    policy = "saw-" + namespace_name + "-runtime"
+    resource(admission + "/validatingadmissionpolicies/" + policy,
+             "validation", normalize=True)
+    resource(admission + "/validatingadmissionpolicybindings/" + policy, "binding")
+    if mode == "kata":
+        resource(admission + "/validatingadmissionpolicies/" + policy + "-kata",
+                 "sandboxPlacement")
+        resource(admission + "/validatingadmissionpolicybindings/" + policy + "-kata",
+                 "sandboxPlacementBinding")
+
+
+def check_workspace_preflight(k8s, user, site, mode, profile, catalog):
+    """Run read-only platform gates before reserving or writing keys."""
+    observations = _preflight.configuration_facts(site)
+    observations["api"] = True
+    try:
+        cluster_version = k8s.call("GET", "/apis/config.openshift.io/v1/clusterversions/version")
+    except Exception:
+        raise PortalError("Workspace preflight failed: ClusterVersionUnavailable") from None
+    try:
+        _preflight.verify_cluster_version(cluster_version)
+        observations["version"] = True
+    except _preflight.PreflightError as exc:
+        raise PortalError("Workspace preflight failed: " + exc.reason) from None
+    crd_names = ("applications.argoproj.io", "applicationsets.argoproj.io",
+                 "sandboxes.agents.x-k8s.io", "externalsecrets.external-secrets.io",
+                 "adminnetworkpolicies.policy.networking.k8s.io")
+    api_readiness = {}
+    try:
+        for crd_name in crd_names:
+            api_readiness[crd_name] = _preflight.crd_established(k8s.call(
+                "GET", "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/" + crd_name,
+                ok404=True))
+        admission_discovery = k8s.call("GET", "/apis/admissionregistration.k8s.io/v1", ok404=True)
+        api_readiness["admissionregistration.k8s.io/v1"] = (
+            _preflight.api_resources_available(
+                admission_discovery, "admissionregistration.k8s.io/v1",
+                ("validatingadmissionpolicies", "validatingadmissionpolicybindings")))
+    except Exception:
+        raise PortalError("Workspace preflight failed: PlatformApiUnavailable") from None
+    observations["agentSandbox"] = api_readiness["sandboxes.agents.x-k8s.io"]
+    observations["admission"] = api_readiness["admissionregistration.k8s.io/v1"]
+    observations["network"] = (observations.get("network") is True
+                                and api_readiness["adminnetworkpolicies.policy.networking.k8s.io"])
+    try:
+        storage = k8s.call("GET", "/apis/storage.k8s.io/v1/storageclasses").get("items", [])
+        _preflight.verify_storage_classes(site, storage)
+        observations["storage"] = True
+    except _preflight.PreflightError:
+        observations["storage"] = False
+    except Exception:
+        observations["storage"] = False
+    try:
+        store_items = k8s.call("GET", "/apis/external-secrets.io/v1/clustersecretstores").get("items", [])
+        _preflight.verify_secret_store(site, store_items)
+    except Exception:
+        observations["secrets"] = False
+    try:
+        vault = Http(env("VAULT_ADDR"), cafile=os.environ.get("VAULT_CACERT") or None,
+                     insecure=os.environ.get("VAULT_SKIP_VERIFY") == "true")
+        health = vault.call("GET", "/v1/sys/health?standbyok=true&perfstandbyok=true")
+        observations["secrets"] = (observations.get("secrets") is not False
+                                     and api_readiness["externalsecrets.external-secrets.io"]
+                                     and _preflight.vault_health_ready(health))
+    except Exception:
+        observations["secrets"] = False
+    try:
+        argo = env("ARGO_NAMESPACE")
+        k8s.call("GET", f"/apis/argoproj.io/v1alpha1/namespaces/{argo}/applications/saw-{user}", ok404=True)
+        observations["argo"] = (api_readiness["applications.argoproj.io"]
+                                 and api_readiness["applicationsets.argoproj.io"])
+    except Exception:
+        observations["argo"] = False
+    if mode == "kata":
+        approval = site.get("kataRuntimeClass") if isinstance(site, dict) else None
+        if not isinstance(approval, dict) or not approval.get("name"):
+            raise PortalError("Kata preflight failed: RuntimeClassApprovalMissing")
+        try:
+            runtime_class = k8s.call("GET", "/apis/node.k8s.io/v1/runtimeclasses/" + approval["name"])
+            configs = k8s.call("GET", "/apis/kataconfiguration.openshift.io/v1/kataconfigs").get("items", [])
+            nodes = k8s.call("GET", "/api/v1/nodes").get("items", [])
+            kata_crd = "kataconfigs.kataconfiguration.openshift.io"
+            api_readiness[kata_crd] = _preflight.crd_established(k8s.call(
+                "GET", "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/" + kata_crd,
+                ok404=True))
+            _preflight.verify_kata_platform(site, runtime_class, configs, nodes,
+                                            api_readiness, cluster_version)
+            observations.update(osc=True, kataConfig=True, workers=True, runtimeClass=True)
+        except _preflight.PreflightError as exc:
+            raise PortalError("Kata preflight failed: " + exc.reason) from None
+        except Exception:
+            raise PortalError("Kata preflight failed: KataPlatformUnavailable") from None
+    try:
+        _preflight.check_observations(mode, observations)
+    except _preflight.PreflightError as exc:
+        raise PortalError("Workspace preflight failed: " + exc.reason) from None
+    except Exception:
+        # API errors can contain request details. Keep the pipeline log safe.
+        raise PortalError("Workspace preflight failed: PlatformApiUnavailable") from None
+    check_live_boundary_approval(k8s, user, site, mode, profile, catalog)
 
 
 def is_deleting(cm):
@@ -1147,7 +1392,7 @@ def workspace_status(k8s, user, catalog, ns, argo_ns, domain, ping=None):
                 "title": message, "text": message, "message": message, "ready": False,
                 "failed": state != "running", "steps": [], "links": []}
     mode = entry_deployment_mode(entry)
-    if mode == "container" and container_site(user):
+    if mode in KUBERNETES_MODES and container_site(user, entry.get("ownerSubject")):
         return container_status(k8s, user, entry, argo_ns, domain, ping or owner_route_available, catalog)
     if mode not in PROVISIONABLE_MODES:
         message = f"{mode} workspace lifecycle and readiness are not qualified in this release"
@@ -1235,7 +1480,7 @@ def removal_status(k8s, user, argo_ns, entry=None):
     ns = k8s.call("GET", f"/api/v1/namespaces/saw-{user}", ok404=True) if prune else None
     if ns is not None:
         left.append(f"namespace saw-{user} ({(ns.get('status') or {}).get('phase', 'Active')})")
-    if entry and entry_deployment_mode(entry) == "container":
+    if entry and entry_deployment_mode(entry) in KUBERNETES_MODES:
         reg = entry_generation(user, entry)
         if not reg:
             raise PortalError("refusing container cleanup without a registration")
@@ -1453,7 +1698,7 @@ def handle(action, request_name):
         cm = k8s.call("GET", f"/api/v1/namespaces/{ns}/configmaps/{name}", ok404=True)
         deleting = cm is not None and is_deleting(cm)
         mode = entry_deployment_mode(read_entry(cm)) if cm else None
-        if mode == "container" or (action == "create" and data.get("deploymentMode") == "container"):
+        if mode in KUBERNETES_MODES or (action == "create" and data.get("deploymentMode") in KUBERNETES_MODES):
             check_container_identity(user, container_site(user))
             if caller != user:
                 pins = json.loads(os.environ.get("SAW_PORTAL_ADMIN_SUBJECTS", "{}"))
@@ -1465,7 +1710,7 @@ def handle(action, request_name):
             entry = read_entry(cm)
             operation = data["runtimeAction"]
             if (operation not in ("start", "stop") or caller != user or deleting or not cm
-                    or entry_deployment_mode(entry) != "container" or entry.get("lifecycleVersion") != 1
+                    or entry_deployment_mode(entry) not in KUBERNETES_MODES or entry.get("lifecycleVersion") != 1
                     or entry_generation(user, entry) != data.get("registration")
                     or f"g-{entry.get('intentGeneration')}" != data.get("expectedGeneration")):
                 raise PortalError("lifecycle request does not match the current owner registration and generation")
@@ -1481,10 +1726,20 @@ def handle(action, request_name):
                 raise PortalError(f"workspace saw-{user} is being deleted; request it again when "
                                   "the delete pipeline has finished")
             mode = request_deployment_mode(data)
+            site = container_site(user) if mode in KUBERNETES_MODES else None
+            profile = None
+            secrets = None
+            if mode in KUBERNETES_MODES:
+                profile, secrets = parse_request(data, catalog)
+                check_workspace_preflight(k8s, user, site, mode, profile, catalog)
             if cm is not None:
                 assert_mode_unchanged(read_entry(cm), mode)
-            if mode == "container" and container_site(user):
-                approved = container_profiles(container_site(user))
+            if mode in KUBERNETES_MODES and site:
+                try:
+                    _workspace.validate_runtime_placement(mode, site)
+                except _workspace.WorkspaceError as exc:
+                    raise PortalError(str(exc)) from exc
+                approved = container_profiles(site, catalog)
                 if data.get("profile") not in approved:
                     raise PortalError("selected profile is not approved for your container workspace; "
                                       "approved profiles: " + (", ".join(sorted(approved)) or "none") +
@@ -1492,14 +1747,19 @@ def handle(action, request_name):
                 if os.environ.get("PRUNE_ON_REMOVE", "true") != "true":
                     raise PortalError("container provisioning requires foreground cleanup; "
                                       "the site administrator must enable portal.pruneOnRemove")
+                try:
+                    _preflight.verify_profile_image_access(site, profile, catalog)
+                except _preflight.PreflightError as exc:
+                    raise PortalError("Workspace preflight failed: " + exc.reason) from None
             elif mode not in PROVISIONABLE_MODES:
                 raise PortalError(f"{mode} workspace provisioning is not available in this release")
-            profile, secrets = parse_request(data, catalog)
-            if mode == "container":
+            if profile is None:
+                profile, secrets = parse_request(data, catalog)
+            if mode in KUBERNETES_MODES:
                 if cm and read_entry(cm)["profiles"] != [profile]:
                     raise PortalError("changing the profile requires a new container registration")
                 endpoint = approved_endpoint(catalog[profile], secrets,
-                                             container_site(user).get("profileBoundaries", {}).get(profile, {}))
+                                             site.get("profileBoundaries", {}).get(profile, {}))
                 if cm and endpoint != read_entry(cm).get("customInferenceURL"):
                     raise PortalError("changing the endpoint requires a new registration")
                 models = public_model_inputs(catalog[profile], secrets)
@@ -1514,7 +1774,7 @@ def handle(action, request_name):
             generation = entry_generation(user, read_entry(cm)) if cm else new_generation()
             prefix = vault_prefix(user, generation)
             entry = registry_entry(user, profile, generation, mode)
-            if mode == "container":
+            if mode in KUBERNETES_MODES:
                 if lifecycle:
                     entry["lifecycleVersion"] = 1
                     entry["initialModelInputs"] = previous.get("initialModelInputs", models)
@@ -1528,7 +1788,7 @@ def handle(action, request_name):
                     entry["webSearch"] = {"enabled": False}
                 if models:
                     entry["modelInputs"] = models
-                if "approvedProfiles" in container_site(user).get("automaticEnrollment",{}):
+                if "approvedProfiles" in site.get("automaticEnrollment",{}) or auto_approved(site):
                     slots=sandbox_targets(user,generation,catalog[profile])
                     entry["uiNamespaces"]=sorted({"saw-ui-"+slot["relayID"] for slot in slots.values() if slot["ui"]})
                 entry["intentGeneration"] = previous.get("intentGeneration", 0) + 1
@@ -1656,7 +1916,7 @@ def wait_stage(stage, user, timeout, sleep=time.sleep, clock=time.monotonic, pin
             failed = False
         else:
             st = workspace_status(k8s, user, catalog, ns, argo_ns, domain, ping)
-            if stage == "vm" and st.get("deploymentMode") == "container":
+            if stage == "vm" and st.get("deploymentMode") in KUBERNETES_MODES:
                 # The initial intent can only be published after the new registration is reviewed.
                 budget = max(timeout, int(os.environ.get("SAW_CONTAINER_ENROLLMENT_SECONDS", timeout)))
             current = next((x for x in st["steps"] if x["id"] == stage), {})
@@ -1705,7 +1965,8 @@ def generator_params(workspaces, defaults, read=None, catalog=None, previous=Non
     for entry in workspaces:
         ws = {**entry, "values": {**entry.get("values", {}),
                                   "deployment": {"mode": entry_deployment_mode(entry)}}}
-        site = container_site(ws["name"]) if entry_deployment_mode(ws) == "container" else {}
+        site = (container_site(ws["name"], ws.get("ownerSubject"))
+                if entry_deployment_mode(ws) in KUBERNETES_MODES else {})
         if site:
             if not ws.get("ownerSubject") or ws["ownerSubject"] != site["subject"]:
                 continue
@@ -1816,7 +2077,7 @@ def serve():
                         scope = (ws["name"], mode, entry_generation(ws["name"], ws),
                                  ws.get("intentGeneration", 0), os.environ.get("KEYCLOAK_URL"),
                                  os.environ.get("KEYCLOAK_REALM"))
-                        check = owner_route_available if mode == "container" else ping_url
+                        check = owner_route_available if mode in KUBERNETES_MODES else ping_url
                         statuses[ws["name"]] = workspace_status(k8s, ws["name"], catalog, ns, argo_ns, domain,
                             ping=lambda url: route_cache.probe(scope, url, check))
                     except PortalError as exc:

@@ -91,6 +91,13 @@ def update(source, ref, destination):
             if target.exists():
                 raise ValueError(f'Upstream {relative} now exists; review the local demo directory')
             shutil.copytree(local, target)
+        # The profile catalogs (and the RHDH templates and mirrors made with them)
+        # are generated from the BOM profiles. Regenerate them after the local
+        # profiles and patches are in place instead of editing generated JSON.
+        (stage / 'scripts').mkdir()
+        shutil.copy2(checkout / 'scripts/saw-profile-catalog.py', stage / 'scripts/saw-profile-catalog.py')
+        subprocess.run(['python3', str(stage / 'scripts/saw-profile-catalog.py')], check=True)
+        shutil.rmtree(stage / 'scripts')
         for file in stage.rglob('*.yaml'):
             text = file.read_text()
             for image, digest in PINS.items():

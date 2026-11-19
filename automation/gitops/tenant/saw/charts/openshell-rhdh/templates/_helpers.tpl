@@ -155,14 +155,41 @@ from the release is enough and keeps renders stable.
 {{- if not (kindIs "string" $mode) -}}
 {{- fail "portal.deploymentModes must contain only strings" -}}
 {{- end -}}
-{{- if not (has $mode (list "vm" "container")) -}}
-{{- fail "portal.deploymentModes supports vm and container" -}}
+{{- if not (has $mode (list "vm" "container" "kata")) -}}
+{{- fail "portal.deploymentModes supports vm, container and kata" -}}
 {{- end -}}
 {{- if hasKey $seen $mode -}}{{- fail "portal.deploymentModes must not contain duplicates" -}}{{- end -}}
 {{- $_ := set $seen $mode true -}}
 {{- end -}}
 {{- if not (hasKey $seen "vm") -}}{{- fail "portal.deploymentModes must include default vm" -}}{{- end -}}
 {{- toJson $modes -}}
+{{- end -}}
+
+{{/* Owner approvals can be rendered from values or read from a cluster Secret. */}}
+{{- define "openshell-rhdh.containerSitesConfigured" -}}
+{{- if and .Values.portal.containerSites .Values.portal.containerSitesSecretName -}}
+{{- fail "set only one of portal.containerSites and portal.containerSitesSecretName" -}}
+{{- end -}}
+{{- if or .Values.portal.containerSites .Values.portal.containerSitesSecretName .Values.containerDefaults -}}true{{- else -}}false{{- end -}}
+{{- end -}}
+
+{{- define "openshell-rhdh.containerSitesEnv" -}}
+- name: SAW_CONTAINER_SITES
+  {{- if .Values.portal.containerSitesSecretName }}
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.portal.containerSitesSecretName | quote }}
+      key: container-sites.json
+  {{- else }}
+  value: {{ .Values.portal.containerSites | default dict | toJson | quote }}
+  {{- end }}
+{{- /* Shared site for every owner without their own entry (saw-users'
+containerDefaults, from overrides/saw-container-defaults.yaml). Subjects come
+from the owner directory; unset chart revisions follow the pattern branch. */}}
+- name: SAW_CONTAINER_DEFAULTS
+  value: {{ .Values.containerDefaults | default dict | toJson | quote }}
+- name: SAW_TARGET_REVISION
+  value: {{ .Values.global.targetRevision | default "" | quote }}
 {{- end -}}
 
 {{/* Generated forms have vm as their safe default; project the administrator's
@@ -174,27 +201,58 @@ allowlist into both forms without enabling privileged form parameters. */}}
 {{- $modes := include "openshell-rhdh.deploymentModes" $root | fromJsonArray -}}
 {{- /* The form can advertise a site-wide union, never an owner authorization.
 The server still verifies the authenticated owner's exact profile approval. */ -}}
-{{- $approved := dict -}}
+{{- $approved := dict "container" (dict) "kata" (dict) -}}
+{{- if $root.Values.portal.containerSitesSecretName -}}
+{{- /* Secret contents are runtime-only. The pipeline performs owner-specific
+      checks; the form can show the enabled site modes and catalog profiles. */ -}}
+{{- range $mode := list "container" "kata" -}}
+{{- if has $mode $modes -}}
+{{- range $id := $step.properties.profile.enum -}}
+{{- $_ := set (index $approved $mode) $id true -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- else -}}
 {{- range $site := $root.Values.portal.containerSites | default dict -}}
 {{- if and (kindIs "map" $site) (regexMatch "^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$" (toString ($site.subject | default ""))) -}}
-{{- $automatic := $site.automaticEnrollment | default dict -}}
-{{- $profiles := dict -}}
-{{- if hasKey $automatic "approvedProfiles" -}}{{- $profiles = $automatic.approvedProfiles -}}{{- end -}}
-{{- range $id, $digest := $profiles -}}
-{{- if regexMatch "^[0-9a-f]{64}$" (toString $digest) -}}{{- $_ := set $approved $id true -}}{{- end -}}
+{{- $mode := "container" -}}
+{{- if hasKey $site "kataRuntimeClass" -}}
+{{- $class := $site.kataRuntimeClass -}}
+{{- if not (and (kindIs "map" $class) (eq (len $class) 3) (regexMatch "^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$" (toString ($class.name | default ""))) (regexMatch "^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$" (toString ($class.uid | default ""))) (regexMatch "^[0-9a-f]{64}$" (toString ($class.sha256 | default "")))) -}}
+{{- fail "Kata site requires a reviewed RuntimeClass name, UID and placement digest" -}}{{- end -}}
+{{- $mode = "kata" -}}
+{{- end -}}
+{{- range $id, $digest := ($site.automaticEnrollment | default dict).approvedProfiles | default dict -}}
+{{- if regexMatch "^[0-9a-f]{64}$" (toString $digest) -}}{{- $_ := set (index $approved $mode) $id true -}}{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
-{{- $containerIDs := list -}}{{- $containerNames := list -}}
+{{- end -}}
+{{- with $root.Values.containerDefaults -}}
+{{- /* The shared site serves every owner: autoApprove offers each catalog
+profile, otherwise its approvedProfiles. */ -}}
+{{- $a := .automaticEnrollment | default dict -}}
+{{- if has "container" $modes -}}
+{{- range $id := $step.properties.profile.enum -}}
+{{- if or (eq (toString ($a.autoApprove | default false)) "true") (hasKey ($a.approvedProfiles | default dict) $id) -}}
+{{- $_ := set (index $approved "container") $id true -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $profilesByMode := dict -}}
+{{- range $mode := list "container" "kata" -}}
+{{- $ids := list -}}{{- $names := list -}}
 {{- range $i, $id := $step.properties.profile.enum -}}
-{{- if hasKey $approved $id -}}
-{{- $containerIDs = append $containerIDs $id -}}
-{{- $containerNames = append $containerNames (index $step.properties.profile.enumNames $i) -}}
+{{- if hasKey (index $approved $mode) $id -}}
+{{- $ids = append $ids $id -}}{{- $names = append $names (index $step.properties.profile.enumNames $i) -}}
 {{- end -}}
 {{- end -}}
-{{- if not $containerIDs -}}{{- $modes = without $modes "container" -}}{{- end -}}
+{{- if not $ids -}}{{- $modes = without $modes $mode -}}{{- end -}}
+{{- $_ := set $profilesByMode $mode (dict "enum" $ids "enumNames" $names) -}}
+{{- end -}}
 {{- $_ := set $step.properties.deploymentMode "enum" $modes -}}
-{{- $labels := dict "vm" "Virtual machine" "container" "Container" -}}
+{{- $labels := dict "vm" "Virtual machine" "container" "Container" "kata" "Kata" -}}
 {{- $names := list -}}
 {{- range $mode := $modes -}}{{- $names = append $names (index $labels $mode) -}}{{- end -}}
 {{- $_ := set $step.properties.deploymentMode "enumNames" $names -}}
@@ -209,10 +267,11 @@ dependency and its credential fields shared by all deployment branches. */ -}}
 {{- $branches := list -}}
 {{- range $mode := $modes -}}
 {{- $field := deepCopy $profileField -}}
-{{- if eq $mode "container" -}}
-{{- $_ := set $field "enum" $containerIDs -}}{{- $_ := set $field "enumNames" $containerNames -}}
-{{- $_ := set $field "default" (first $containerIDs) -}}
-{{- $_ := set $field "description" "Container profiles configured at this site. Your administrator must also approve the selected profile for your account; existing container registrations keep their profile." -}}
+{{- if hasKey $profilesByMode $mode -}}
+{{- $choices := index $profilesByMode $mode -}}
+{{- $_ := set $field "enum" $choices.enum -}}{{- $_ := set $field "enumNames" $choices.enumNames -}}
+{{- $_ := set $field "default" (first $choices.enum) -}}
+{{- $_ := set $field "description" "Profiles configured for this deployment. Your administrator must also approve the selected profile for your account." -}}
 {{- else -}}
 {{- $_ := set $field "enum" $vmIDs -}}{{- $_ := set $field "enumNames" $vmNames -}}
 {{- end -}}

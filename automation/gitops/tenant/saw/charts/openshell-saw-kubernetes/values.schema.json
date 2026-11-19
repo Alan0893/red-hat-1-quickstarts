@@ -9,7 +9,8 @@
         "mode": {
           "type": "string",
           "enum": [
-            "container"
+            "container",
+            "kata"
           ]
         }
       },
@@ -24,10 +25,40 @@
         "experimental": {
           "type": "boolean"
         },
+        "startupTimeouts": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "provisioningRepairWindowSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 86400
+            },
+            "runtimeBootstrapGraceSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 86400
+            },
+            "sandboxAttachRequestTimeoutSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 86400
+            }
+          },
+          "required": [
+            "provisioningRepairWindowSeconds",
+            "runtimeBootstrapGraceSeconds",
+            "sandboxAttachRequestTimeoutSeconds"
+          ]
+        },
         "gateway": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
+            "version": {
+              "type": "string",
+              "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z.-]+)?$"
+            },
             "image": {
               "type": "string"
             },
@@ -36,6 +67,7 @@
             }
           },
           "required": [
+            "version",
             "image",
             "resources"
           ]
@@ -185,6 +217,7 @@
       },
       "required": [
         "experimental",
+        "startupTimeouts",
         "gateway",
         "supervisor",
         "workload",
