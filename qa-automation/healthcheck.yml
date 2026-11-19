@@ -65,8 +65,13 @@
       - procurement-vector-db-v1-0
       - techsupport-vector-db-v1-0
     routes:
+      # Route name is `<argo-application-name>-rag`, i.e. tenant-<guid>-rag.
+      # Verified against a live seat: tenant-<guid>-... does NOT exist.
       - name: RAG UI
-        url: "https://tenant-{{ tenant_guid }}-{{ rag_ns }}.{{ domain }}"
+        url: "https://tenant-{{ tenant_guid }}-rag-{{ rag_ns }}.{{ domain }}"
+        status_code: [200, 302, 303, 307]
+      - name: Showroom
+        url: "https://showroom-{{ showroom_ns }}.{{ domain }}"
         status_code: [200, 302, 303, 307]
       - name: Webmail
         url: "https://test-email-server-ui-{{ it_selfsvc_ns }}.{{ domain }}"
