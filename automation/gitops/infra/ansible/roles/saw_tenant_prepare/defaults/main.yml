@@ -19,6 +19,9 @@ saw_tenant_prepare_lease_prefix: saw-anp-priority-
 saw_tenant_prepare_priority_first: 20
 saw_tenant_prepare_priority_last: 99
 
+# Published by saw_prepare (cluster) in the lease namespace.
+saw_tenant_prepare_network_configmap: saw-container-network
+
 saw_tenant_prepare_api_url: "{{ sandbox_openshift_api_url }}"
 saw_tenant_prepare_api_token: "{{ cluster_admin_agnosticd_sa_token | trim }}"
 saw_tenant_prepare_validate_certs: false

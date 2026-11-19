@@ -218,19 +218,19 @@ class SawIntegrationTests(unittest.TestCase):
         self.assertEqual(proxy['spec']['template']['spec']['containers'][0]['image'], PROXY)
 
     def test_tenant_can_select_container_workspace_mode(self):
+        issuer = 'https://openshell-keycloak-ingress-saw-keycloak.apps.test.example/realms/openshell'
+        api = {'to': [{'ipBlock': {'cidr': '172.30.0.1/32'}}], 'ports': [{'protocol': 'TCP', 'port': 443}]}
+        keycloak = {'to': [{'ipBlock': {'cidr': '10.0.0.5/32'}}], 'ports': [{'protocol': 'TCP', 'port': 443}]}
         saw = {
             'deploymentMode': 'container', 'userName': 'user-7kzmd',
             'clusterDomain': 'test.example',
             'ownerSubject': '11111111-1111-4111-8111-111111111111',
-            'registration': 'abcdef0123456789',
-            'installationID': '22222222-2222-4222-8222-222222222222',
-            'profile': 'data-science',
-            'containerSite': {
-                'subject': '11111111-1111-4111-8111-111111111111',
-                'automaticEnrollment': {
-                    'enabled': False,
-                    'approvedProfiles': {'data-science': 'a' * 64},
-                },
+            'container': {
+                'network': {'issuer': issuer, 'commonEgress': [api], 'issuerEgress': [keycloak],
+                            'applicationSetControllerLabels': {'app.kubernetes.io/name': 'openshift-gitops-applicationset-controller'}},
+                'anpPriority': 23,
+                'storageClass': 'rbd', 'sharedStorageClass': 'cephfs',
+                'notebookImage': 'example.invalid/openclaw@sha256:' + 'b' * 64,
             },
         }
         docs = render(ROOT / 'tenant/bootstrap', {'rag': None, 'tenant': {'name': '7kzmd'}, 'saw': saw})
@@ -238,11 +238,23 @@ class SawIntegrationTests(unittest.TestCase):
         values = yaml.safe_load(app['spec']['source']['helm']['values'])
         user = values['users'][0]
         self.assertEqual(user['values']['deployment']['mode'], 'container')
-        self.assertNotIn('vmSource', saw)
-        self.assertEqual(values['containerSites']['user-7kzmd']['subject'], saw['ownerSubject'])
+        self.assertEqual(user['profiles'], ['data-science'])
+        self.assertEqual(user['vaultPrefix'], 'secret/data/hub')
+        site = values['containerDefaults']
+        gateway = site['stack']['gateway']['values']
+        self.assertEqual(gateway['oidc']['issuerUrl'], issuer)
+        self.assertEqual(gateway['kubernetes']['network']['gatewayEgress'][-2:], [api, keycloak])
+        self.assertEqual(site['automaticEnrollment']['relay']['egress'], [api, keycloak])
+        self.assertEqual(site['stack']['proxy']['values']['network']['bootstrapEgress'], [api])
+        self.assertEqual(site['stack']['policy']['values']['network']['priority'], 23)
+        self.assertEqual(site['stack']['audit']['values']['exchangeStorageClass'], 'cephfs')
+        self.assertEqual(values['projection']['egress'], [api])
         child_apps = child(app)
-        runtime = next(d for d in child_apps if d['kind'] == 'Application' and d['metadata']['name'] == 'saw-user-7kzmd')
-        self.assertTrue(runtime['spec']['source']['path'].endswith('/saw-portal-container'))
+        self.assertTrue(any(d['kind'] == 'ApplicationSet' for d in child_apps))
+        # Every discovered input is required, so a cluster without saw_prepare fails early.
+        del saw['container']['network']
+        with self.assertRaises(subprocess.CalledProcessError):
+            render(ROOT / 'tenant/bootstrap', {'rag': None, 'tenant': {'name': '7kzmd'}, 'saw': saw})
 
     def test_invalid_identity_and_unpinned_inputs_fail(self):
         base = {'rag': None, 'saw': {'userName': '7kzmd', 'clusterDomain': 'test.example', 'credentialProxyImage': PROXY, 'vmSource': {'dataSource': 'golden'}}}
