@@ -20,6 +20,12 @@ kind: ExternalSecret
 metadata:
   name: saw-demo-ingress-ca
   namespace: openshell-agents
+  annotations:
+    # The External Secrets CRD is installed by this same Application (wave -1).
+    # Without this, Argo's pre-sync dry run fails on a fresh cluster and
+    # nothing is applied, including the vault and openshell-agents namespaces.
+    argocd.argoproj.io/sync-options: SkipDryRunOnMissingResource=true
+    argocd.argoproj.io/sync-wave: "1"
 spec:
   refreshInterval: 1h
   secretStoreRef:
