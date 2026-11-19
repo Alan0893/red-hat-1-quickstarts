@@ -8,6 +8,7 @@ saw_prepare_external_secrets_namespace: external-secrets
 saw_prepare_external_secrets_service_account: ocp-external-secrets
 saw_prepare_namespace: openshell-agents
 saw_prepare_vault_namespace: vault
+saw_prepare_vault_pod: vault-0
 saw_prepare_vault_token_secret: "{{ saw_vault_writer_secret | default('saw-vault-writer') }}"
 saw_prepare_vault_token_key: token
 saw_prepare_vault_ssh_path: hub/ssh
@@ -18,3 +19,7 @@ saw_prepare_mirror_repository: openshell-gateway
 saw_prepare_mirror_source_secret: "{{ saw_mirror_source_secret | default('') }}"
 saw_prepare_retries: 180
 saw_prepare_delay: 10
+# Infra bootstrap Application that creates the vault and openshell-agents namespaces.
+saw_prepare_bootstrap_namespace: "{{ ocp4_workload_gitops_bootstrap_namespace | default('openshift-gitops') }}"
+saw_prepare_bootstrap_application: "{{ ocp4_workload_gitops_bootstrap_application_name | default('lb2142-ai-quickstarts') }}"
+saw_prepare_bootstrap_retries: 60

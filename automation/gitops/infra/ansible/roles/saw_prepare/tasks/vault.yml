@@ -71,6 +71,23 @@
       subjects:
         - {kind: ServiceAccount, name: saw-vault-bootstrap, namespace: "{{ saw_prepare_vault_namespace }}"}
 
+# The namespace appears before the Vault image is pulled; starting the Job
+# earlier burns its retries against a Service with no listening server.
+- name: Wait for the Vault server pod to start
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ saw_prepare_vault_namespace }}"
+    name: "{{ saw_prepare_vault_pod }}"
+  register: _saw_vault_pod
+  retries: "{{ saw_prepare_retries }}"
+  delay: "{{ saw_prepare_delay }}"
+  until: >-
+    _saw_vault_pod.resources | default([]) | length > 0 and
+    (_saw_vault_pod.resources[0].status.phase | default('')) == 'Running' and
+    (_saw_vault_pod.resources[0].status.containerStatuses | default([])
+     | selectattr('started', 'defined') | selectattr('started') | list | length > 0)
+
 - name: Initialize and configure the dedicated workshop Vault
   block:
     - name: Start the Vault bootstrap Job

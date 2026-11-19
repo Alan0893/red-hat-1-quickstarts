@@ -6,7 +6,8 @@ metadata:
   labels:
     app.kubernetes.io/part-of: saw-prepare
 spec:
-  backoffLimit: 6
+  # activeDeadlineSeconds bounds the run; allow restarts while Vault starts.
+  backoffLimit: 20
   activeDeadlineSeconds: 1800
   ttlSecondsAfterFinished: 3600
   template:
