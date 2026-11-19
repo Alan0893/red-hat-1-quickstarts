@@ -230,7 +230,6 @@ class SawIntegrationTests(unittest.TestCase):
                             'applicationSetControllerLabels': {'app.kubernetes.io/name': 'openshift-gitops-applicationset-controller'}},
                 'anpPriority': 23,
                 'storageClass': 'rbd', 'sharedStorageClass': 'cephfs',
-                'notebookImage': 'example.invalid/openclaw@sha256:' + 'b' * 64,
             },
         }
         docs = render(ROOT / 'tenant/bootstrap', {'rag': None, 'tenant': {'name': '7kzmd'}, 'saw': saw})
@@ -249,6 +248,7 @@ class SawIntegrationTests(unittest.TestCase):
         self.assertEqual(site['stack']['policy']['values']['network']['priority'], 23)
         self.assertEqual(site['stack']['audit']['values']['exchangeStorageClass'], 'cephfs')
         self.assertEqual(values['projection']['egress'], [api])
+        self.assertRegex(site['profileImageOverrides']['data-science']['notebook'], r'@sha256:[a-f0-9]{64}$')
         child_apps = child(app)
         self.assertTrue(any(d['kind'] == 'ApplicationSet' for d in child_apps))
         # Every discovered input is required, so a cluster without saw_prepare fails early.
