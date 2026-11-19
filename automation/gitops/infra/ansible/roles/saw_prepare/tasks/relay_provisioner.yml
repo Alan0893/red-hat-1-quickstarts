@@ -1,0 +1,63 @@
+---
+# Container workspaces enroll through a relay that registers one Keycloak
+# client per workspace. It needs a platform-owned registrar client that can
+# only create clients in the workspace realm. Upstream's own setup script
+# (files/setup-relay-provisioner.py, unmodified from SAW 2b221770) renders the
+# Secret, RBAC and a Job that creates it and checks its privileges; we just
+# render it here and wait. The script is idempotent, so a rerun is safe.
+
+- name: Render the relay registrar setup
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - "{{ role_path }}/files/setup-relay-provisioner.py"
+      - --namespace
+      - "{{ saw_prepare_keycloak_namespace }}"
+      - --issuer
+      - "https://{{ _saw_issuer_host }}/realms/{{ saw_prepare_keycloak_realm }}"
+      - --bootstrap-secret
+      - "{{ saw_prepare_keycloak_admin_secret }}"
+  delegate_to: localhost
+  changed_when: false
+  register: _saw_relay_render
+
+- name: Look for an earlier registrar setup Job
+  kubernetes.core.k8s_info:
+    api_version: batch/v1
+    kind: Job
+    namespace: "{{ saw_prepare_keycloak_namespace }}"
+    name: "{{ saw_prepare_relay_provisioner }}"
+  register: _saw_relay_old_job
+
+# A Job doesn't retry once it failed, so start over instead of waiting on it.
+- name: Remove a failed registrar setup Job
+  when: (_saw_relay_old_job.resources[0].status.failed | default(0)) | int > 0
+  kubernetes.core.k8s:
+    state: absent
+    api_version: batch/v1
+    kind: Job
+    namespace: "{{ saw_prepare_keycloak_namespace }}"
+    name: "{{ saw_prepare_relay_provisioner }}"
+    delete_options:
+      propagationPolicy: Background
+    wait: true
+  loop: "{{ _saw_relay_old_job.resources[:1] }}"
+
+- name: Create the relay registrar setup
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ (_saw_relay_render.stdout | from_json)['items'] }}"
+
+- name: Wait for the relay registrar setup
+  kubernetes.core.k8s_info:
+    api_version: batch/v1
+    kind: Job
+    namespace: "{{ saw_prepare_keycloak_namespace }}"
+    name: "{{ saw_prepare_relay_provisioner }}"
+  register: _saw_relay_job
+  retries: 30
+  delay: 10
+  until: >-
+    (_saw_relay_job.resources[0].status.succeeded | default(0)) | int > 0
+    or (_saw_relay_job.resources[0].status.failed | default(0)) | int > 0
+  failed_when: (_saw_relay_job.resources[0].status.failed | default(0)) | int > 0

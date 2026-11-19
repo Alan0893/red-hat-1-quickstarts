@@ -30,4 +30,7 @@ saw_prepare_container_enabled: >-
 saw_prepare_container_network_configmap: saw-container-network
 saw_prepare_keycloak_namespace: saw-keycloak
 saw_prepare_keycloak_realm: openshell
+saw_prepare_keycloak_admin_secret: openshell-keycloak-initial-admin
+# Upstream's fixed name for the relay registrar client, Secret and Job.
+saw_prepare_relay_provisioner: saw-relay-provisioner
 saw_prepare_gitops_namespace: "{{ ocp4_workload_gitops_bootstrap_namespace | default('openshift-gitops') }}"

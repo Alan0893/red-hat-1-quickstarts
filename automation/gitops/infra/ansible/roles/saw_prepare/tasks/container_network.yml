@@ -191,3 +191,6 @@
     msg: >-
       {{ _saw_common_egress | length }} API/DNS rules and {{ _saw_issuer_egress | length }} issuer rules
       for {{ _saw_issuer_host }} published in {{ saw_prepare_namespace }}/{{ saw_prepare_container_network_configmap }}.
+
+- name: Set up the Keycloak relay registrar
+  ansible.builtin.include_tasks: relay_provisioner.yml
