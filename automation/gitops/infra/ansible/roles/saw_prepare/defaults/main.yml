@@ -23,3 +23,11 @@ saw_prepare_delay: 10
 saw_prepare_bootstrap_namespace: "{{ ocp4_workload_gitops_bootstrap_namespace | default('openshift-gitops') }}"
 saw_prepare_bootstrap_application: "{{ ocp4_workload_gitops_bootstrap_application_name | default('lb2142-ai-quickstarts') }}"
 saw_prepare_bootstrap_retries: 60
+# Container workspaces: publish this cluster's API, DNS and Keycloak addresses
+# for their network policies (what upstream's `make container-topology` finds).
+saw_prepare_container_enabled: >-
+  {{ (ocp4_workload_gitops_bootstrap_helm_values | default({})).get('saw', {}).get('container', {}).get('enabled', false) | bool }}
+saw_prepare_container_network_configmap: saw-container-network
+saw_prepare_keycloak_namespace: saw-keycloak
+saw_prepare_keycloak_realm: openshell
+saw_prepare_gitops_namespace: "{{ ocp4_workload_gitops_bootstrap_namespace | default('openshift-gitops') }}"

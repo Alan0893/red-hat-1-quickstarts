@@ -1,0 +1,193 @@
+---
+# NetworkPolicies can't name hosts, so container workspaces need this cluster's
+# addresses as /32 rules. Same discovery as upstream's container_topology.py:
+# the API service and endpoints, cluster DNS, and the Keycloak issuer as seen
+# from inside the cluster. Tenants read the result from one ConfigMap.
+
+- name: Read the Kubernetes API service
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: default
+    name: kubernetes
+  register: _saw_api_service
+
+- name: Read the Kubernetes API endpoints
+  kubernetes.core.k8s_info:
+    api_version: discovery.k8s.io/v1
+    kind: EndpointSlice
+    namespace: default
+    label_selectors:
+      - kubernetes.io/service-name=kubernetes
+  register: _saw_api_slices
+
+- name: Read the cluster DNS service
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: openshift-dns
+    name: dns-default
+  register: _saw_dns_service
+
+- name: Read the cluster DNS endpoints
+  kubernetes.core.k8s_info:
+    api_version: discovery.k8s.io/v1
+    kind: EndpointSlice
+    namespace: openshift-dns
+    label_selectors:
+      - kubernetes.io/service-name=dns-default
+  register: _saw_dns_slices
+
+- name: Read the cluster ingress domain
+  kubernetes.core.k8s_info:
+    api_version: config.openshift.io/v1
+    kind: Ingress
+    name: cluster
+  register: _saw_ingress
+
+- name: Find the ApplicationSet controller
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    namespace: "{{ saw_prepare_gitops_namespace }}"
+  register: _saw_gitops_pods
+
+- name: Work out the issuer and the API and DNS rules
+  vars:
+    _api_ip: "{{ _saw_api_service.resources[0].spec.clusterIP }}"
+    _api_endpoints: >-
+      {{ _saw_api_slices.resources | selectattr('addressType', 'equalto', 'IPv4')
+         | map(attribute='endpoints') | flatten | map(attribute='addresses') | flatten | unique | sort }}
+    _api_port: >-
+      {{ (_saw_api_slices.resources | map(attribute='ports') | flatten
+          | selectattr('name', 'equalto', 'https') | first).port }}
+    _dns_ip: "{{ _saw_dns_service.resources[0].spec.clusterIP }}"
+    # Named Service ports on 53, mapped to the ports the DNS pods listen on.
+    _dns_names: >-
+      {{ _saw_dns_service.resources[0].spec.ports | selectattr('port', 'equalto', 53) | map(attribute='name') | list }}
+    _dns_ports: >-
+      {{ _saw_dns_slices.resources | selectattr('addressType', 'equalto', 'IPv4')
+         | map(attribute='ports') | flatten | selectattr('name', 'in', _dns_names) | list }}
+    _appset: >-
+      {%- set names = [] -%}
+      {%- for pod in _saw_gitops_pods.resources if pod.metadata.deletionTimestamp is not defined -%}
+      {%- set name = (pod.metadata.labels | default({})).get('app.kubernetes.io/name', '') -%}
+      {%- if name is search('-applicationset-controller$') and name not in names -%}{%- set _ = names.append(name) -%}{%- endif -%}
+      {%- endfor -%}
+      {{- names -}}
+  ansible.builtin.set_fact:
+    _saw_issuer_host: "openshell-keycloak-ingress-{{ saw_prepare_keycloak_namespace }}.{{ _saw_ingress.resources[0].spec.domain }}"
+    _saw_appset_labels: "{{ {'app.kubernetes.io/name': _appset[0]} if _appset | length == 1 else {} }}"
+    _saw_common_egress: >-
+      {%- set rules = [{'to': [{'ipBlock': {'cidr': _api_ip ~ '/32'}}], 'ports': [{'protocol': 'TCP', 'port': 443}]}] -%}
+      {%- for ip in _api_endpoints -%}
+      {%- set _ = rules.append({'to': [{'ipBlock': {'cidr': ip ~ '/32'}}], 'ports': [{'protocol': 'TCP', 'port': _api_port | int}]}) -%}
+      {%- endfor -%}
+      {%- set _ = rules.append({'to': [{'ipBlock': {'cidr': _dns_ip ~ '/32'}}],
+                               'ports': [{'protocol': 'TCP', 'port': 53}, {'protocol': 'UDP', 'port': 53}]}) -%}
+      {%- set backends = [] -%}
+      {%- for p in _dns_ports -%}{%- set _ = backends.append({'protocol': p.protocol, 'port': p.port | int}) -%}{%- endfor -%}
+      {%- set _ = rules.append({'to': [{'namespaceSelector': {'matchLabels': {'kubernetes.io/metadata.name': 'openshift-dns'}},
+                                       'podSelector': {'matchLabels': {'dns.operator.openshift.io/daemonset-dns': 'default'}}}],
+                               'ports': backends | unique | sort(attribute='protocol')}) -%}
+      {{- rules -}}
+
+- name: Check the discovered addresses
+  ansible.builtin.assert:
+    that:
+      - _saw_common_egress | length >= 4
+      - _saw_appset_labels | length == 1
+    fail_msg: >-
+      Could not discover the API endpoints, cluster DNS or a single ApplicationSet controller
+      in {{ saw_prepare_gitops_namespace }}; container workspaces need all three.
+
+# The issuer must be resolved from a pod: from outside the cluster the route can
+# resolve to a different (public) address than the one pods connect to.
+- name: Resolve the Keycloak issuer from inside the cluster
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: "saw-issuer-probe-{{ _saw_run_id }}"
+        namespace: "{{ saw_prepare_namespace }}"
+        labels: {app.kubernetes.io/part-of: saw-prepare}
+      spec:
+        backoffLimit: 3
+        ttlSecondsAfterFinished: 3600
+        template:
+          spec:
+            restartPolicy: Never
+            automountServiceAccountToken: false
+            securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+            containers:
+              - name: probe
+                image: "{{ saw_prepare_python_image }}"
+                securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+                command: [python3, -c]
+                args:
+                  - |
+                    import json, socket, sys
+                    found = {a[4][0] for a in socket.getaddrinfo(sys.argv[1], 443, socket.AF_INET, socket.SOCK_STREAM)}
+                    print(json.dumps(sorted(found)))
+                  - "{{ _saw_issuer_host }}"
+
+- name: Wait for the issuer probe
+  kubernetes.core.k8s_info:
+    api_version: batch/v1
+    kind: Job
+    namespace: "{{ saw_prepare_namespace }}"
+    name: "saw-issuer-probe-{{ _saw_run_id }}"
+  register: _saw_probe_job
+  retries: 30
+  delay: 5
+  until: >-
+    _saw_probe_job.resources | length > 0 and
+    ((_saw_probe_job.resources[0].status.succeeded | default(0) | int > 0) or
+     (_saw_probe_job.resources[0].status.failed | default(0) | int > 3))
+
+- name: Read the issuer addresses
+  kubernetes.core.k8s_log:
+    namespace: "{{ saw_prepare_namespace }}"
+    label_selectors:
+      - "job-name=saw-issuer-probe-{{ _saw_run_id }}"
+  register: _saw_probe_log
+
+- name: Build the issuer rules
+  vars:
+    _ips: "{{ _saw_probe_log.log_lines | select('match', '[[]') | last | from_json }}"
+  ansible.builtin.set_fact:
+    _saw_issuer_egress: >-
+      {%- set rules = [] -%}
+      {%- for ip in _ips -%}
+      {%- set _ = rules.append({'to': [{'ipBlock': {'cidr': ip ~ '/32'}}], 'ports': [{'protocol': 'TCP', 'port': 443}]}) -%}
+      {%- endfor -%}
+      {{- rules -}}
+
+- name: Check the issuer addresses
+  ansible.builtin.assert:
+    that: _saw_issuer_egress | length > 0
+    fail_msg: "{{ _saw_issuer_host }} did not resolve inside the cluster."
+
+- name: Publish the container network inputs for tenants
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ saw_prepare_container_network_configmap }}"
+        namespace: "{{ saw_prepare_namespace }}"
+        labels: {app.kubernetes.io/part-of: saw-prepare}
+      data:
+        issuer: "https://{{ _saw_issuer_host }}/realms/{{ saw_prepare_keycloak_realm }}"
+        commonEgress: "{{ _saw_common_egress | to_json }}"
+        issuerEgress: "{{ _saw_issuer_egress | to_json }}"
+        applicationSetControllerLabels: "{{ _saw_appset_labels | to_json }}"
+
+- name: Report the container network inputs
+  ansible.builtin.debug:
+    msg: >-
+      {{ _saw_common_egress | length }} API/DNS rules and {{ _saw_issuer_egress | length }} issuer rules
+      for {{ _saw_issuer_host }} published in {{ saw_prepare_namespace }}/{{ saw_prepare_container_network_configmap }}.
