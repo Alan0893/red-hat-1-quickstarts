@@ -112,6 +112,26 @@ class SawIntegrationTests(unittest.TestCase):
         self.assertEqual(secret['spec']['data'][0]['secretKey'], 'ca-bundle.crt')
         self.assertEqual(secret['spec']['data'][0]['remoteRef']['property'], 'ca-bundle.crt')
 
+    def test_infra_without_virtualization_installs_no_kubevirt(self):
+        chart = ROOT / 'infra/bootstrap'
+        base = {'saw': {'enabled': True, 'clusterDomain': 'test.example', 'keycloak': {'postgresPassword': 'example-only'}}}
+        def parts(values):
+            docs = render(chart, values)
+            return ({x['metadata']['name'] for x in docs if x['kind'] == 'Application'},
+                    {x['spec']['name'] for x in docs if x['kind'] == 'Subscription'},
+                    {x['metadata']['name'] for x in docs if x['kind'] == 'Namespace'})
+        apps, subscriptions, namespaces = parts(base)
+        self.assertIn('saw-virtualization', apps)
+        self.assertIn('kubevirt-hyperconverged', subscriptions)
+        self.assertIn('openshift-cnv', namespaces)
+        base['saw']['virtualization'] = {'enabled': False}
+        apps, subscriptions, namespaces = parts(base)
+        self.assertNotIn('saw-virtualization', apps)
+        self.assertNotIn('kubevirt-hyperconverged', subscriptions)
+        self.assertNotIn('openshift-cnv', namespaces)
+        self.assertIn('saw-keycloak', apps)
+        self.assertIn('rhbk-operator', subscriptions)
+
     def test_infra_opt_in_and_children(self):
         chart = ROOT / 'infra/bootstrap'
         self.assertEqual([x['kind'] for x in render(chart, {})], ['ConfigMap', 'ArgoCD'])

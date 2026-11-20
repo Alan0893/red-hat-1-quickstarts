@@ -29,10 +29,12 @@ caProvider:
 {{- $apps := list
   (dict "name" "saw-vault" "release" "vault" "namespace" "vault" "path" "automation/gitops/infra/saw/vault" "wave" "0" "values" (mustMergeOverwrite $vaultDefaults (deepCopy $saw.vault.values)))
   (dict "name" "saw-external-secrets" "namespace" "external-secrets" "path" "automation/gitops/infra/saw/external-secrets" "wave" "0" "values" (mustMergeOverwrite $esoDefaults (deepCopy $saw.externalSecrets.values)))
-  (dict "name" "saw-virtualization" "namespace" "openshift-cnv" "path" "automation/gitops/tenant/saw/charts/openshift-cnv" "wave" "0" "values" dict)
   (dict "name" "saw-keycloak" "namespace" "saw-keycloak" "path" "automation/gitops/tenant/saw/charts/openshell-keycloak" "wave" "0" "values" (mustMergeOverwrite $keycloakDefaults (deepCopy $saw.keycloak.values)))
   (dict "name" "saw-governance-policy" "namespace" "openshell-agents" "path" "automation/gitops/tenant/saw/charts/governance-policy" "wave" "0" "values" dict)
   (dict "name" "saw-governance-interceptor" "namespace" "openshell-agents" "path" "automation/gitops/tenant/saw/charts/governance-interceptor" "wave" "0" "values" $governanceValues) -}}
+{{- if ne (lower (toString (dig "virtualization" "enabled" true $saw))) "false" -}}
+{{- $apps = append $apps (dict "name" "saw-virtualization" "namespace" "openshift-cnv" "path" "automation/gitops/tenant/saw/charts/openshift-cnv" "wave" "0" "values" dict) -}}
+{{- end -}}
 {{- $container := $saw.container | default dict -}}
 {{- if and (eq (lower (toString $container.enabled)) "true") (ne (lower (toString $container.agentSandbox)) "false") -}}
 {{- /* Its CRD is too large for client-side apply's last-applied annotation. */ -}}

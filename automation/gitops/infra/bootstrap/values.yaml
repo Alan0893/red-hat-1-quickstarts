@@ -28,6 +28,11 @@ saw:
     revision: main
   gitopsNamespace: openshift-gitops
   clusterDomain: ""
+  # OpenShift Virtualization, for VM workspaces. Container-only sites turn it
+  # off: no operator, no HyperConverged, and saw_prepare skips the VM golden
+  # image and SSH key.
+  virtualization:
+    enabled: true
   # Shared synthetic demo services in openshell-agents. Enable all three
   # flags for authenticated, automatically populated tenant sources.
   demo:

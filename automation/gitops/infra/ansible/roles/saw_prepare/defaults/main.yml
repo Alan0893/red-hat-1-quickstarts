@@ -30,6 +30,10 @@ saw_prepare_bootstrap_retries: 60
 saw_prepare_container_enabled: >-
   {{ (ocp4_workload_gitops_bootstrap_helm_values | default({})).get('saw', {}).get('container', {}).get('enabled', false) | bool }}
 saw_prepare_container_network_configmap: saw-container-network
+# VM workspaces need the golden image mirrored and an SSH key in Vault; a site
+# without OpenShift Virtualization (saw.virtualization.enabled false) has no VMs.
+saw_prepare_vm_enabled: >-
+  {{ (ocp4_workload_gitops_bootstrap_helm_values | default({})).get('saw', {}).get('virtualization', {}).get('enabled', true) | bool }}
 saw_prepare_keycloak_namespace: saw-keycloak
 saw_prepare_keycloak_realm: openshell
 saw_prepare_keycloak_admin_secret: openshell-keycloak-initial-admin

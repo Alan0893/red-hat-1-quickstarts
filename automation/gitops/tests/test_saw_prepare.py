@@ -190,6 +190,15 @@ module.exit_json(changed=True)
             result = subprocess.run(['ansible-playbook', '-i', 'localhost,', '-e', '{"saw_enabled": false}', str(play)], env=env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual((tmp / 'events').read_text(), '')
+            # A site without OpenShift Virtualization has no VMs: no SSH key, no golden image.
+            (tmp / 'mirrored').unlink(missing_ok=True)
+            no_vms = json.dumps({'ocp4_workload_gitops_bootstrap_helm_values':
+                                 {'saw': {'enabled': True, 'virtualization': {'enabled': False}}}})
+            result = subprocess.run(['ansible-playbook', '-i', 'localhost,', '-e', no_vms, str(play)], env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            templates = [json.loads(line)['template'] for line in (tmp / 'events').read_text().splitlines()]
+            self.assertIn('vault-job.yaml.j2', templates)
+            self.assertFalse({'ssh-job.yaml.j2', 'mirror-job.yaml.j2'} & set(templates))
 
     def test_bootstrap_render_wait_outlasts_transient_argo_errors(self):
         # Issue #26: InvalidSpecError while AppProject/default is still being created.
