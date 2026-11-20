@@ -281,9 +281,6 @@ kind: ApplicationSet
 metadata:
   name: {{ $name }}
   namespace: {{ $argo }}
-  # After the identity Job (wave 0) has written the plugin token Secret;
-  # otherwise the controller misses it and only retries after ~3 minutes.
-  annotations: {argocd.argoproj.io/sync-wave: "1"}
   labels: {saw.redhat.com/projector-owner: {{ $owner | quote }}}
 spec:
   goTemplate: true
