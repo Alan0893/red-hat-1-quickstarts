@@ -124,6 +124,21 @@ the sidecar is not deployed at all and seats can provision.
 
 ## Open questions
 
+- **Argo CD Applications are absent after a seat provisions.** Both a 4.20 and a
+  4.22 cluster showed zero `Application` objects cluster-wide while the tenant
+  resources carried `argocd.argoproj.io/tracking-id: tenant-<guid>:…`. Deleting
+  an Application without `resources-finalizer.argocd.argoproj.io` orphans its
+  resources, which is exactly the observed state. Until this is explained, no
+  gate may require an Application to exist: assert resource outcomes instead
+  (deployments available, routes answering, VMs running). This supersedes the
+  `tenant-<guid>` / `saw-users-<guid>` checks in the scaffolded playbooks.
+- **SAW container mode changed the module 7 surface.** There is no
+  `saw-users-<guid>` Application and no `user-<guid>-webui-saw-user-<guid>`
+  route. The only browser entry point is the per-sandbox relay route
+  `user-<guid>-default-notebook-ui` (the OpenClaw tab); the `SAW Dashboard` tab
+  was removed from the item's ui-config. Module 7 content no longer mentions it.
+  The module 7 gate must be rewritten around the relay route and the
+  `default--notebook` pod rather than a VMI.
 - **llama-stack endpoint** — the service name and port (`llamastack.<ns>.svc:8321`)
   are taken from the tenant chart, not yet confirmed from inside a runner pod.
   The same endpoint is used by the readiness health check.
