@@ -53,7 +53,7 @@ The one line to say out loud: "A routing agent triages intent and hands off to s
 // VERIFY against the live environment before the event: confirm the Webmail tab, the pre-seeded users, and the laptop-refresh flow behave as written.
 This is the heart of the demo. You'll play an employee emailing IT and let the agent walk the whole request to a filed ticket. Everything happens inside Showroom — you click the *Webmail* tab and you're in.
 
-A word on the channel, because a customer will ask. The agent "meets employees where they already work" — their email. What you're looking at here is a test inbox standing in for a real corporate mailbox, so you can drive the conversation live. That's a strength, not a workaround: no new app for employees to learn, no portal to adopt. They email IT the way they already do, and an agent answers.
+A word on the channel, because a customer will ask. The agent "meets employees where they already work" — their email (other channels are also supported by the quickstart like Slack). What you're looking at here is a test inbox standing in for a real corporate mailbox, so you can drive the conversation live. That's a strength, not a workaround: no new app for employees to learn, no portal to adopt. They email IT the way they already do, and an agent answers.
 
 [TIP]
 ====
@@ -103,11 +103,6 @@ Yes, please create the ticket
 
 . The agent creates the ticket and returns a ticket number, for example *REQ3143724*. This is the close of the demo: a real request, resolved end to end, with a tracking number the employee can hold onto.
 
-[NOTE]
-====
-To run the flow again from the top — for a different persona or a second take — just send an email containing `reset`.
-====
-
 === Verify
 
 You sent plain-language emails as Alice, the agent checked eligibility, showed region-specific options, took your approval, and returned a ticket number. If you got a REQ number back, you've shown the full end-to-end resolution that sells this demo.
@@ -116,9 +111,8 @@ You sent plain-language emails as Alice, the agent checked eligibility, showed r
 
 Run this only if time allows — the core sale is already done in Exercise 1. But it's the fastest way to kill the "is this just a canned demo?" doubt. Different employees get different, correct answers because the agent applies real policy and per-employee data.
 
-. Send an email containing `reset`, then run the same short laptop-refresh flow as a different person. Try these:
+Run the same same short laptop-refresh flow as a different person(selection drop down is in top right of Webmail tab) Try one of these:
 +
-* *alice.johnson@company.com* — EMEA, eligible. The baseline you already ran.
 * *maria.garcia@company.com* — LATAM. She sees a *different regional catalog* — the options that are valid where she is.
 * *john.doe@company.com* — EMEA, same catalog as Alice, but a *different laptop on file*. Same region, different personal data.
 
@@ -139,7 +133,7 @@ Your job here isn't to click through a form. It's narration and framing. Keep co
 Expect these questions, and have the answers ready:
 
 * "Is this only for laptops?" — No. The laptop refresh is today's example. The same framework handles other IT processes — Privacy Impact Assessments, RFP generation, access requests, software license requests — by swapping in a specialist agent, its knowledge, and its tools.
-* "Does my team have to live in email?" — No. Email is the channel we're showing. Meet users where they are.
+* "Does my team have to live in email?" — No. Email is the channel we're showing. Meet users where they are. The quickstart also support Slack and supports adding other integrations.
 
 == Meet Users Where They Are
 
