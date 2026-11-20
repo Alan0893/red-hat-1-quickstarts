@@ -132,6 +132,10 @@ kind: Application
 metadata:
   name: {{ printf "saw-users-%s" .Values.tenant.name | quote }}
   namespace: {{ .Values.gitops.namespace | quote }}
+  # Deleting the tenant must also delete the workspaces this app created
+  # (VM apps, or the container projector and everything it generated).
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io/foreground
 spec:
   project: default
   source:
