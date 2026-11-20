@@ -191,6 +191,47 @@ module.exit_json(changed=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual((tmp / 'events').read_text(), '')
 
+    def test_bootstrap_render_wait_outlasts_transient_argo_errors(self):
+        # Issue #26: InvalidSpecError while AppProject/default is still being created.
+        transient = {'sync': {'status': 'Unknown'}, 'conditions': [
+            {'type': 'InvalidSpecError', 'message': 'Application referencing project default which does not exist'}]}
+        rendered = {'sync': {'status': 'OutOfSync'}, 'conditions': []}
+        with tempfile.TemporaryDirectory() as temp:
+            tmp = pathlib.Path(temp)
+            plugins = tmp / 'collections/ansible_collections/kubernetes/core/plugins/modules'
+            plugins.mkdir(parents=True)
+            # Each call returns the next status in SAW_TEST_SEQUENCE, then keeps the last one.
+            (plugins / 'k8s_info.py').write_text('''#!/usr/bin/python
+from ansible.module_utils.basic import AnsibleModule
+import json, os, pathlib
+module = AnsibleModule(argument_spec=dict(api_version=dict(), kind=dict(), namespace=dict(), name=dict()))
+sequence = json.loads(os.environ['SAW_TEST_SEQUENCE'])
+counter = pathlib.Path(os.environ['SAW_TEST_COUNTER'])
+calls = int(counter.read_text()) if counter.exists() else 0
+counter.write_text(str(calls + 1))
+module.exit_json(changed=False, resources=[{'status': sequence[min(calls, len(sequence) - 1)]}])
+''')
+            tasks = yaml.safe_load((ROLE / 'tasks/provision.yml').read_text())
+            task = next(t for t in tasks if t['name'] == 'Wait for Argo CD to reconcile the infra bootstrap Application')
+            play = tmp / 'playbook.yaml'
+            play.write_text(yaml.safe_dump([{'hosts': 'localhost', 'connection': 'local', 'gather_facts': False,
+                'vars': {'saw_prepare_bootstrap_retries': 3, 'saw_prepare_delay': 0,
+                         'saw_prepare_bootstrap_namespace': 'openshift-gitops',
+                         'saw_prepare_bootstrap_application': 'lb2142-ai-quickstarts'}, 'tasks': [task]}]))
+            env = os.environ.copy()
+            env.update({'ANSIBLE_LOCAL_TEMP': str(tmp / 'local'), 'ANSIBLE_REMOTE_TEMP': str(tmp / 'remote'),
+                        'ANSIBLE_COLLECTIONS_PATH': str(tmp / 'collections'), 'ANSIBLE_NOCOLOR': '1'})
+            for name, sequence, succeeds in [('transient', [transient, rendered], True),
+                                             ('persistent', [transient], False),
+                                             ('rendered', [rendered], True)]:
+                env['SAW_TEST_SEQUENCE'] = json.dumps(sequence)
+                env['SAW_TEST_COUNTER'] = str(tmp / ('calls-' + name))
+                result = subprocess.run(['ansible-playbook', '-i', 'localhost,', str(play)], env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode == 0, succeeds, name + ': ' + result.stdout + result.stderr)
+                if not succeeds:
+                    self.assertIn('InvalidSpecError', result.stdout)
+                    self.assertIn('project default which does not exist', result.stdout)
+
     def test_bootstrap_readiness_requires_health_and_successful_operation(self):
         with tempfile.TemporaryDirectory() as temp:
             tmp = pathlib.Path(temp)
