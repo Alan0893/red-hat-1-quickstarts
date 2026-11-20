@@ -331,6 +331,9 @@ class SawRefreshTests(unittest.TestCase):
                 contents = files[patch['file']]
                 self.assertEqual(contents.count(patch['new']), 1, patch['file'])
                 files[patch['file']] = contents.replace(patch['new'], patch['old'])
+            # Vendored copies also carry the updater's chart path rewrite; undo it too.
+            for patch in patches:
+                files[patch['file']] = files[patch['file']].replace('"automation/gitops/tenant/saw/charts/', '"charts/')
             for name, contents in files.items():
                 path = source / name
                 path.parent.mkdir(parents=True, exist_ok=True)
