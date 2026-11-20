@@ -1,6 +1,6 @@
 # Shared site for every container workspace on the cluster (saw-users
 # containerDefaults). Adapted from upstream SAW
-# overrides/saw-container-defaults.yaml at 2b221770, minus the parts that were
+# overrides/saw-container-defaults.yaml at b8877b4c, minus the parts that were
 # specific to one cluster: inference host, OpenClaw image, runtime image, ANP
 # priority. application-saw.yaml fills those in, plus the egress rules and
 # issuer that saw_prepare discovers (the saw-container-network ConfigMap).
@@ -27,6 +27,8 @@ stack:
   identity:
     values:
       enabled: true
+      network:
+        bootstrapEgress: []  # application-saw.yaml: API and DNS
       ownerID: '@INSTALLATION@'
       targetNamespace: '@RUNTIME@'
       gateway: '@OWNER@'
@@ -92,62 +94,6 @@ stack:
           - portNumber:
               protocol: TCP
               port: 5500
-        - name: credential-proxy
-          to:
-          - pods:
-              namespaceSelector:
-                matchLabels:
-                  kubernetes.io/metadata.name: '@TRUSTED@'
-              podSelector:
-                matchLabels:
-                  app.kubernetes.io/instance: '@OWNER@'
-                  openshell.pattern/role: credential-proxy
-          ports:
-          - portNumber:
-              protocol: TCP
-              port: 3128
-  proxy:
-    values:
-      enabled: true
-      ownerID: '@INSTALLATION@'
-      gateway: '@OWNER@'
-      targetNamespace: '@RUNTIME@'
-      policyConfigMap: '@OWNER@-proxy-policy'
-      network:
-        bootstrapEgress: []
-        proxyEgress:
-        - to:
-          - namespaceSelector:
-              matchLabels:
-                kubernetes.io/metadata.name: openshift-dns
-            podSelector:
-              matchLabels:
-                dns.operator.openshift.io/daemonset-dns: default
-          ports:
-          - protocol: UDP
-            port: 53
-          - protocol: UDP
-            port: 5353
-          - protocol: TCP
-            port: 53
-          - protocol: TCP
-            port: 5353
-        - to:
-          - ipBlock:
-              cidr: 0.0.0.0/0
-              except:
-              - 0.0.0.0/8
-              - 10.0.0.0/8
-              - 100.64.0.0/10
-              - 127.0.0.0/8
-              - 169.254.0.0/16
-              - 172.16.0.0/12
-              - 192.168.0.0/16
-              - 224.0.0.0/4
-              - 240.0.0.0/4
-          ports:
-          - protocol: TCP
-            port: 443
   gateway:
     values:
       deployment:
@@ -164,9 +110,6 @@ stack:
         storage:
           gatewaySize: 1Gi
           workspaceSize: 10Gi
-        proxy:
-          url: http://@OWNER@-credential-proxy.@TRUSTED@.svc:3128
-          caConfigMap: '@OWNER@-proxy-ca'
         governance:
           endpoint: http://governance-interceptor.openshell-agents.svc:18081
         network:
@@ -185,17 +128,6 @@ stack:
             ports:
             - protocol: TCP
               port: 18081
-          - to:
-            - namespaceSelector:
-                matchLabels:
-                  kubernetes.io/metadata.name: '@TRUSTED@'
-              podSelector:
-                matchLabels:
-                  app.kubernetes.io/instance: '@OWNER@'
-                  openshell.pattern/role: credential-proxy
-            ports:
-            - protocol: TCP
-              port: 3128
       route:
         enabled: false
   audit:

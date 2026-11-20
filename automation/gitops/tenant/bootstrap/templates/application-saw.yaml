@@ -63,7 +63,15 @@
 {{- $_ := set $site.automaticEnrollment.relay "issuer" $issuer -}}
 {{- $_ := set $site.automaticEnrollment.relay "egress" $issuerRules -}}
 {{- $_ := set $site.stack.policy.values.network "priority" (int $priority) -}}
-{{- $_ := set $site.stack.proxy.values.network "bootstrapEgress" $common -}}
+{{- $_ := set $site.stack.identity.values.network "bootstrapEgress" $common -}}
+{{- /* The supervisor reaches providers itself; OpenShell decides which hosts.
+       Public HTTPS is open (stack.yaml); routes on this cluster resolve to the
+       router's private addresses, so pass those on 443 as well. */ -}}
+{{- $routers := list -}}
+{{- range $rule := $net.issuerEgress -}}{{- range $peer := $rule.to -}}{{- if $peer.ipBlock -}}
+{{- $routers = append $routers $peer.ipBlock.cidr -}}
+{{- end -}}{{- end -}}{{- end -}}
+{{- $_ := set $site.stack.policy.values.network "egress" (append $site.stack.policy.values.network.egress (dict "name" "cluster-routes" "to" (list (dict "networks" ($routers | uniq | sortAlpha))) "ports" (list (dict "portNumber" (dict "protocol" "TCP" "port" 443))))) -}}
 {{- $gw := $site.stack.gateway.values -}}
 {{- $_ := set $gw "oidc" (dict "issuerUrl" $issuer) -}}
 {{- $_ := set $gw.kubernetes.network "gatewayEgress" (concat $gw.kubernetes.network.gatewayEgress $issuerRules) -}}
@@ -71,8 +79,6 @@
 {{- $_ := set $site.stack.audit.values "storageClass" $c.storageClass -}}
 {{- $_ := set $site.stack.audit.values "exchangeStorageClass" (required "saw.container.sharedStorageClass (ReadWriteMany) is required" $c.sharedStorageClass) -}}
 {{- if $saw.inferenceHost -}}
-{{- /* The proxy policy only lets the workspace reach this one provider host. */ -}}
-{{- $_ := set $site "providerAllowHosts" (list $saw.inferenceHost) -}}
 {{- $_ := set $site "profileBoundaries" (dict "custom-inference" (dict "inferenceBaseURL" (printf "https://%s/v1" $saw.inferenceHost) "allowHosts" (list $saw.inferenceHost))) -}}
 {{- end -}}
 {{- end -}}
