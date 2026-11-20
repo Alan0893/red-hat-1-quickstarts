@@ -12,9 +12,6 @@
 {{- if not (has $mode (list "vm" "container")) -}}
 {{- fail "saw.deploymentMode must be vm or container" -}}
 {{- end -}}
-{{- if and (eq $mode "container") (eq (lower (toString (($saw.demo | default dict).provisioningEnabled))) "true") -}}
-{{- fail "personal-assistant demo requires saw.deploymentMode=vm" -}}
-{{- end -}}
 {{- $proxy := $saw.credentialProxyImage | default "" -}}
 {{- if and (eq $mode "vm") (not (regexMatch "^.+@sha256:[a-f0-9]{64}$" $proxy)) -}}
 {{- if not $proxy -}}{{- fail "saw.credentialProxyImage is required" -}}{{- end -}}
@@ -49,7 +46,12 @@
 {{- if not (regexMatch "^[0-9]{1,2}$" $priority) -}}
 {{- fail "saw.container.anpPriority must be 0-99" -}}
 {{- end -}}
+{{- $demoProvision := eq (include "tenant.sawDemo" $) "provision" -}}
 {{- $profile := ternary "custom-inference" ($saw.profile | default "data-science") $seeded -}}
+{{- if $demoProvision -}}
+{{- if not $seeded -}}{{- fail "the personal-assistant demo needs saw.inferenceSeed for its model" -}}{{- end -}}
+{{- $profile = "demo-assistant" -}}
+{{- end -}}
 {{- $_ := set $user "ownerSubject" (required "saw.ownerSubject is required for container deployment" $saw.ownerSubject) -}}
 {{- $_ := set $user "profiles" (list $profile) -}}
 {{- if $seeded -}}
@@ -80,7 +82,9 @@
 {{- $_ := set $site.stack.audit.values "storageClass" $c.storageClass -}}
 {{- $_ := set $site.stack.audit.values "exchangeStorageClass" (required "saw.container.sharedStorageClass (ReadWriteMany) is required" $c.sharedStorageClass) -}}
 {{- if $saw.inferenceHost -}}
-{{- $_ := set $site "profileBoundaries" (dict "custom-inference" (dict "inferenceBaseURL" (printf "https://%s/v1" $saw.inferenceHost) "allowHosts" (list $saw.inferenceHost))) -}}
+{{- $boundary := dict "inferenceBaseURL" (printf "https://%s/v1" $saw.inferenceHost) "allowHosts" (list $saw.inferenceHost) -}}
+{{- /* The selected profile (custom-inference, or demo-assistant for the demo) uses the same endpoint. */ -}}
+{{- $_ := set $site "profileBoundaries" (dict "custom-inference" $boundary $profile $boundary) -}}
 {{- end -}}
 {{- end -}}
 {{- $defaults := dict
@@ -117,7 +121,8 @@
 {{- $_ := set $values.global "repoURL" $repo -}}
 {{- $_ := set $values.global "targetRevision" $revision -}}
 {{- $_ := set $values.global "vpArgoNamespace" .Values.gitops.namespace -}}
-{{- if eq (lower (toString (($saw.demo | default dict).enabled))) "true" -}}
+{{- $demoMode := include "tenant.sawDemo" $ -}}
+{{- if $demoMode -}}
 {{- $egress := $values.defaults.openshellSaw.egress | default dict -}}
 {{- $hosts := $egress.extraAllow | default list -}}
 {{- range $service := list "mailpit" "mattermost" "radicale" -}}
@@ -126,10 +131,13 @@
 {{- $_ := set $egress "extraAllow" ($hosts | uniq) -}}
 {{- $_ := set $values.defaults.openshellSaw "egress" $egress -}}
 {{- $demo := $saw.demo | default dict -}}
-{{- $provision := eq (lower (toString $demo.provisioningEnabled)) "true" -}}
+{{- $provision := eq $demoMode "provision" -}}
 {{- if $provision -}}
 {{- $_ := set $values.defaults "profiles" (list "demo-assistant") -}}
+{{- if eq $mode "vm" -}}
+{{- /* Container users already have their registration-scoped prefix. */ -}}
 {{- $_ := set (index $values.users 0) "vaultPrefix" (printf "secret/data/hub/saw-%s" $name) -}}
+{{- end -}}
 {{- $_ := set $values.defaults.openshellSaw "sourceReaders" (dict "enabled" true "demoId" $name "tenantUser" $name) -}}
 {{- end -}}
 {{- end -}}
