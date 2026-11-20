@@ -98,5 +98,10 @@
     "file": "charts/openshell-saw/files/installer/tool-gate.test.mjs",
     "old": "[\"tool_search\", \"tool_call\",",
     "new": "[\"tool_search\", \"tool_describe\", \"tool_call\","
+  },
+  {
+    "file": "charts/saw-users/templates/projector.yaml",
+    "old": "kind: ApplicationSet\nmetadata:\n  name: {{ $name }}\n  namespace: {{ $argo }}\n",
+    "new": "kind: ApplicationSet\nmetadata:\n  name: {{ $name }}\n  namespace: {{ $argo }}\n  # After the identity Job (wave 0) has written the plugin token Secret;\n  # otherwise the controller misses it and only retries after ~3 minutes.\n  annotations: {argocd.argoproj.io/sync-wave: \"1\"}\n"
   }
 ]
