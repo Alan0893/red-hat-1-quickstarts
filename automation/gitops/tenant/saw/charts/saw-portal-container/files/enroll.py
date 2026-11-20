@@ -3,14 +3,19 @@ import json
 import os
 import ssl
 import time
+import urllib.error
 import urllib.request as h
 from pathlib import Path
 from saw_kubernetes.adapters import KubernetesResourceVerifier
 from saw_kubernetes.audit import capture
 from saw_kubernetes.compiler import compile_profile_files, digest
 from saw_kubernetes.intent import build_intent
+from preflight import PreflightError, api_resources_available, crd_established, verify_kata_platform
 from portal_contract import verify_contract
 from receipt import receipt_key
+from gateway_ca import read_public_ca
+from http_errors import format_http_error
+from kube_api import request_headers
 
 S=Path("/var/run/secrets/kubernetes.io/serviceaccount")
 class NoRedirect(h.HTTPRedirectHandler):
@@ -18,28 +23,81 @@ class NoRedirect(h.HTTPRedirectHandler):
 client=h.build_opener(h.ProxyHandler({}),NoRedirect(),h.HTTPSHandler(context=ssl.create_default_context(cafile=str(S/"ca.crt"))))
 def api(path, patch=None):
     req=h.Request("https://kubernetes.default.svc"+path,method="PATCH" if patch is not None else "GET",
-        headers={"Authorization":"Bearer "+(S/"token").read_text().strip(),"Content-Type":"application/merge-patch+json"},data=json.dumps(patch).encode() if patch is not None else None)
+        headers=request_headers((S/"token").read_text().strip(), patch is not None),data=json.dumps(patch).encode() if patch is not None else None)
     with client.open(req,timeout=9) as response:return json.load(response)
 
 def once(x):
     u,r,sub,ident=x["user"],x["registration"],x["subject"],x["installation"]
     ns,t,hist="saw-"+u,"saw-ctl-"+r,"saw-history-"+r
+    runtime=x.get("kataRuntimeClass")
+    mode="kata" if runtime else "container"
     def obj(kind,name,namespace=ns):
+        if kind=="runtimeclass" and runtime and name==runtime["name"]:
+            return api("/apis/node.k8s.io/v1/runtimeclasses/"+name)
         if kind=="namespace":return api("/api/v1/namespaces/"+name)
         plural={"persistentvolumeclaim":"persistentvolumeclaims","configmap":"configmaps"}[kind]
         return api("/api/v1/namespaces/"+namespace+"/"+plural+"/"+name)
     nsobj=obj("namespace",ns)["metadata"]
     if nsobj["labels"].get("saw.redhat.com/runtime-owner")!=ident or nsobj.get("deletionTimestamp"):raise ValueError("namespace ownership")
-    cfg=dict(namespace=ns,namespaceUID=nsobj["uid"],ownerID=ident,mode="container",trustedNamespace=t,
-             governanceNamespace=x["governance"],gateway=u,proxyPolicy=u+"-proxy-policy",slotKeys=sorted(x["targets"]))
+    if x.get("autoApprove"):
+        # autoApprove publishes the first observation once. A rerun (new chart
+        # inputs) must not compare it with today's, which includes the running
+        # workspace; the reconciler still rejects later boundary changes.
+        published=api(f"/api/v1/namespaces/{t}/configmaps/saw-portal-enrollment")
+        binding=(published.get("data") or {}).get("binding.json")
+        if ((published["metadata"].get("labels") or {}).get("saw.redhat.com/runtime-owner")==ident
+                and binding and json.loads(binding).get("registration")==r):
+            print("Registration "+r+" is already enrolled",flush=True)
+            return
+    if runtime:
+        try:
+            runtime_class=obj("runtimeclass",runtime["name"])
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:raise PreflightError("RuntimeClassUnavailable") from None
+            raise
+        try:
+            configs=api("/apis/kataconfiguration.openshift.io/v1/kataconfigs")["items"]
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:raise PreflightError("SandboxedContainersUnavailable") from None
+            raise
+        nodes=api("/api/v1/nodes")["items"]
+        try:
+            cluster_version=api("/apis/config.openshift.io/v1/clusterversions/version")
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:raise PreflightError("ClusterVersionUnavailable") from None
+            raise
+        api_readiness={}
+        for name in ("kataconfigs.kataconfiguration.openshift.io", "sandboxes.agents.x-k8s.io",
+                     "externalsecrets.external-secrets.io", "adminnetworkpolicies.policy.networking.k8s.io"):
+            try:
+                api_readiness[name]=crd_established(api("/apis/apiextensions.k8s.io/v1/customresourcedefinitions/"+name))
+            except urllib.error.HTTPError as exc:
+                if exc.code == 404:api_readiness[name]=False
+                else:raise
+        try:
+            admission_discovery=api("/apis/admissionregistration.k8s.io/v1")
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:admission_discovery={}
+            else:raise
+        api_readiness["admissionregistration.k8s.io/v1"] = api_resources_available(
+            admission_discovery, "admissionregistration.k8s.io/v1",
+            ("validatingadmissionpolicies", "validatingadmissionpolicybindings"))
+        verify_kata_platform(x, runtime_class, configs, nodes, api_readiness, cluster_version)
+    cfg=dict(namespace=ns,namespaceUID=nsobj["uid"],ownerID=ident,mode=mode,trustedNamespace=t,
+             governanceNamespace=x["governance"],gateway=u,slotKeys=sorted(x["targets"]))
+    if runtime: cfg["workloadRuntimeClass"]=runtime["name"]
     cache={}
     def get(p):
         if p not in cache:cache[p]=api(p)
         return cache[p]
-    approved=capture(cfg,get)["approved"]
-    verify_contract(cfg,get,x["reference"])
+    approved=capture(cfg,get)["approved"]  # health, admission and network checks always run
     profile=obj("configmap","saw-bom-profiles")
-    if digest(profile["data"])!=x["profileSHA256"]:raise ValueError("unapproved BOM")
+    if not x.get("autoApprove"):
+        # Reviewed sites compare the live boundary and BOM with the operator's approval.
+        # autoApprove (an explicit cluster setting) publishes this first observation instead;
+        # later changes to the enrolled boundary still fail closed.
+        verify_contract(cfg,get,x["reference"])
+        if digest(profile["data"])!=x["profileSHA256"]:raise ValueError("unapproved BOM")
     def pvc(name,ro):
         return dict(claimName=name,uid=obj("persistentvolumeclaim",name)["metadata"]["uid"],readOnly=ro)
     harnesses = {}
@@ -66,12 +124,13 @@ def once(x):
             host="-".join((u,target["workspace"],target["sandbox"],"ui"))
             slot["browser"]={"ownerLogin":u,"origin":"https://"+host+".apps."+x["domain"]}
         slots[key]=slot
-    bindings=dict(ownerID=ident,namespace=ns,namespaceUID=nsobj["uid"],ownerSubject=sub,mode="container",
-       gatewayVersion="0.1.2-rhaiv.6",approvedCredentialFreeProviders=[],bindings=slots)
-    if x.get("providerPolicy"):
-        bindings["proxyBindings"] = [{"secret": b["secret"], "key": b["key"], "type": typ,
-                                      "refresh": bool(b.get("refresh"))}
-                                     for b in x["providerPolicy"]["bindings"] for typ in b["providers"]]
+    bindings=dict(ownerID=ident,namespace=ns,namespaceUID=nsobj["uid"],ownerSubject=sub,mode=mode,
+       gatewayVersion=x["gatewayVersion"],approvedCredentialFreeProviders=[],bindings=slots)
+    if runtime:
+        bindings.update(workloadRuntimeClass=runtime["name"],workloadRuntimeClassUID=runtime["uid"],
+                        workloadRuntimeClassDigest=runtime["sha256"])
+    if x.get("credentialBindings"):
+        bindings["credentialBindings"] = x["credentialBindings"]
     if x.get("customInferenceURL"):
         bindings["customInferenceURL"] = x["customInferenceURL"]
     if x.get("modelInputs"):
@@ -79,7 +138,7 @@ def once(x):
     plan=compile_profile_files(profile["data"],bindings)
     KubernetesResourceVerifier(obj,lambda _:None)(plan)  # same snapshot verified above
     intent=json.loads(build_intent(profile,bindings,name="saw-runtime-intent",generation=1,pin_plan=True)["data"]["intent.json"])
-    public_ca=Path("/gateway-ca/ca.crt").read_text()
+    public_ca=read_public_ca(t,u,ident,get)
     ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).load_verify_locations(cadata=public_ca)
     result=json.dumps(dict(registration=r,approved=approved,intent=intent,gatewayCA=public_ca),sort_keys=True)
     path=f"/api/v1/namespaces/{t}/configmaps/saw-portal-enrollment"
@@ -94,8 +153,12 @@ if __name__=="__main__":
     x=json.loads(Path("/bootstrap/config.json").read_text())
     for n in range(100):
         try:once(x);break
+        except PreflightError as exc:
+            print("Kata preflight failed: "+exc.reason,flush=True)
+            raise SystemExit(1)
         except Exception as exc:
             # Never log an API body, credential, or other input.
-            print("Waiting for reviewed inputs: "+type(exc).__name__+(" "+str(exc)[:120] if type(exc).__name__=="BoundaryError" else ""),flush=True)
+            detail = format_http_error(exc) if isinstance(exc, urllib.error.HTTPError) else type(exc).__name__
+            print("Waiting for reviewed inputs: "+detail+(" "+str(exc)[:120] if type(exc).__name__=="BoundaryError" else ""),flush=True)
             if n==99:raise SystemExit(1)
             time.sleep(5)

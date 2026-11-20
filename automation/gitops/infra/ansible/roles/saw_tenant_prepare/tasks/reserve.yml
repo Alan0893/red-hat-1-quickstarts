@@ -1,0 +1,43 @@
+---
+- name: Fail when every priority is taken
+  ansible.builtin.fail:
+    msg: >-
+      No free AdminNetworkPolicy priority between {{ saw_tenant_prepare_priority_first }}
+      and {{ saw_tenant_prepare_priority_last }}; release unused saw-anp-priority ConfigMaps.
+  when: _saw_try | int >= _saw_free | length
+
+- name: Try to reserve priority {{ _saw_free[_saw_try | int] }}
+  ansible.builtin.uri:
+    url: "{{ saw_tenant_prepare_api_url }}/api/v1/namespaces/{{ saw_tenant_prepare_lease_namespace }}/configmaps"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ saw_tenant_prepare_api_token }}"
+    body_format: json
+    body:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ saw_tenant_prepare_lease_prefix }}{{ _saw_free[_saw_try | int] }}"
+        labels:
+          app.kubernetes.io/part-of: saw-anp-priority
+          saw.redhat.com/tenant: "{{ guid }}"
+      data:
+        priority: "{{ _saw_free[_saw_try | int] | string }}"
+        user: "{{ saw_tenant_prepare_username }}"
+    status_code: [201, 409]
+    validate_certs: "{{ saw_tenant_prepare_validate_certs }}"
+  register: _saw_attempt
+
+- name: Keep the reserved priority
+  when: _saw_attempt.status == 201
+  ansible.builtin.set_fact:
+    saw_tenant_anp_priority: "{{ _saw_free[_saw_try | int] | int }}"
+
+- name: Move on to the next free priority
+  when: _saw_attempt.status == 409
+  ansible.builtin.set_fact:
+    _saw_try: "{{ _saw_try | int + 1 }}"
+
+- name: Try the next free priority
+  when: _saw_attempt.status == 409
+  ansible.builtin.include_tasks: reserve.yml

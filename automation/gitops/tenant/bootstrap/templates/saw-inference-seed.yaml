@@ -13,6 +13,16 @@
 {{- if or (ne $url.scheme "https") (ne (lower (trimSuffix ":443" $url.host)) (lower $host)) $url.userinfo $url.query $url.fragment }}
 {{- fail "saw inference URL must be HTTPS on port 443 and match saw.inferenceHost" }}
 {{- end }}
+{{- $vaultPath := printf "hub/saw-%s/inference" $name -}}
+{{- if eq (lower (toString ($saw.deploymentMode | default "vm"))) "container" }}
+{{- /* Container users keep credentials under their registration, the same
+       sha256("name:generation")[:16] that saw-users derives. */ -}}
+{{- $registration := printf "%s:%v" $name 1 | sha256sum | trunc 16 -}}
+{{- $vaultPath = printf "hub/saw-%s/%s/inference" $name $registration -}}
+{{- if ne (trimSuffix "/" $data.url) (printf "https://%s/v1" $host) }}
+{{- fail "container workspaces need saw.inferenceSeed.secretData.url to be https://<saw.inferenceHost>/v1" }}
+{{- end }}
+{{- end }}
 ---
 apiVersion: v1
 kind: Secret
@@ -45,7 +55,7 @@ spec:
           image: registry.access.redhat.com/ubi9/python-311@sha256:a0bdb55576fc5b8d6704279307817828ef027e1065533ceba133fe9516003a6c
           securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
           env:
-            - {name: VAULT_PATH, value: {{ printf "hub/saw-%s/inference" $name | quote }}}
+            - {name: VAULT_PATH, value: {{ $vaultPath | quote }}}
           command: [python, -c]
           args:
             - |

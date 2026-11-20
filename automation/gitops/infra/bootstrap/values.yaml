@@ -28,6 +28,11 @@ saw:
     revision: main
   gitopsNamespace: openshift-gitops
   clusterDomain: ""
+  # OpenShift Virtualization, for VM workspaces. Container-only sites turn it
+  # off: no operator, no HyperConverged, and saw_prepare skips the VM golden
+  # image and SSH key.
+  virtualization:
+    enabled: true
   # Shared synthetic demo services in openshell-agents. Enable all three
   # flags for authenticated, automatically populated tenant sources.
   demo:
@@ -42,6 +47,19 @@ saw:
     values: {}
   externalSecrets:
     values: {}
+  # Container workspaces (SAW deployment.mode: container). Off by default so
+  # VM-only clusters are unchanged. Turns on Argo CD's ApplicationSet
+  # controller, which generates each container workspace's applications.
+  container:
+    enabled: false
+    # The cluster-wide Agent Sandbox controller and CRDs. Leave on unless the
+    # platform already provides a compatible installation.
+    agentSandbox: true
+    # The vendored interceptor default predates mTLS operator access
+    # (upstream 118b4cfa), which container workspaces need. This is the
+    # upstream CI build of f582a118 (OpenShell v0.1.6, multi-arch index).
+    # saw.governance.values.image still wins if set.
+    governanceImage: ghcr.io/validatedpatterns-sandbox/governance-interceptor@sha256:8c8feeec3b25de48604a5bbc62bba45e6d10ac1d08a5efbd6b8ceee988ca4aa9
   inferenceSeed:
     enabled: false
     sourceSecret: saw-inference

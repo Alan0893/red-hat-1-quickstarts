@@ -1,0 +1,37 @@
+---
+# Admin API access to the OpenShell realm, for provision and destroy.
+- name: Read the OpenShell Keycloak admin credentials
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Secret
+    namespace: "{{ saw_tenant_prepare_keycloak_namespace }}"
+    name: "{{ saw_tenant_prepare_keycloak_admin_secret }}"
+  register: _saw_kc_admin
+  retries: 30
+  delay: 10
+  until: _saw_kc_admin.resources | default([]) | length == 1
+  no_log: true
+
+- name: Log in to the Keycloak admin API
+  ansible.builtin.uri:
+    url: "{{ saw_tenant_prepare_keycloak_url }}/realms/master/protocol/openid-connect/token"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      grant_type: password
+      client_id: admin-cli
+      username: "{{ _saw_kc_admin.resources[0].data.username | b64decode }}"
+      password: "{{ _saw_kc_admin.resources[0].data.password | b64decode }}"
+    validate_certs: "{{ saw_tenant_prepare_validate_certs }}"
+  register: _saw_kc_login
+  retries: 30
+  delay: 10
+  until: _saw_kc_login.status == 200
+  no_log: true
+
+- name: Set the admin API location
+  ansible.builtin.set_fact:
+    _saw_kc_api: "{{ saw_tenant_prepare_keycloak_url }}/admin/realms/{{ saw_tenant_prepare_keycloak_realm }}"
+    _saw_kc_headers:
+      Authorization: "Bearer {{ _saw_kc_login.json.access_token }}"
+  no_log: true

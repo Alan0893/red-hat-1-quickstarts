@@ -5,9 +5,10 @@ description: For email, chat, calendar or daily briefings, read this skill and e
 
 # Daily briefing (Mailpit, Mattermost and Radicale)
 
-Today's briefing is `/sandbox/.openclaw/workspace/briefing/<YYYY-MM-DD>/briefing.md`. Every item
-collected today is in `/sandbox/.openclaw/workspace/briefing/<YYYY-MM-DD>/items.jsonl`, one JSON
-object per line.
+Today's briefing is `<briefing dir>/<YYYY-MM-DD>/briefing.md`, and every item collected today
+is in `<briefing dir>/<YYYY-MM-DD>/items.jsonl`, one JSON object per line. The briefing dir is
+`/sandbox/briefing` when that directory exists (container workspaces), otherwise
+`/sandbox/.openclaw/workspace/briefing`; each reader's `file` field gives the exact path.
 
 Email, chat and calendar are read-only and reached only through three tools:
 `mailpit_reader__saw_read_email`, `mattermost_reader__saw_read_chat` and

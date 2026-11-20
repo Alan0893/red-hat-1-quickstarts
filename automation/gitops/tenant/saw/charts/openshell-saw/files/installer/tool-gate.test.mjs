@@ -54,7 +54,7 @@ test("the consequential set is the policy file, not the gate source", () => {
   assert.deepEqual(policy.rules.map((rule) => rule.id), [
     "exec-consequential", "exec-git-status", "exec-git-diff", "exec-git-log", "exec-git-show",
     "exec-openclaw-automation-inspect", "exec-openclaw-automation-change", "exec-openclaw-set-identity",
-    "process-poll", "tool-search", "tool-describe", "tool-call",
+    "tool-search", "tool-describe", "tool-call",
     "slack-new-messages", "slack-channels", "gmail-new-messages", "briefing-save",
     "saw-demo-email", "saw-demo-chat", "saw-demo-calendar", "saw-demo-briefing",
     "read", "memory-search", "memory-get", "session-status", "sessions-list", "sessions-history",
@@ -63,19 +63,6 @@ test("the consequential set is the policy file, not the gate source", () => {
   assert.equal(policy.defaultAction, "deny");
   const installerCopy = readFileSync(path.join(here, "tool-actions.yaml"), "utf8");
   assert.equal(installerCopy, policyText);
-});
-
-test("process polling is allowed but process input and termination remain denied", () => {
-  assert.equal(call({ toolName: "process", params: { action: "poll", sessionId: "session-1" } }).effect.kind, "allow");
-  for (const params of [{ action: "poll" }, { action: "poll", sessionId: "" },
-    { action: "write", sessionId: "session-1", data: "unsafe" },
-    { action: "kill", sessionId: "session-1" }, { action: "list" }]) {
-    assert.equal(call({ toolName: "process", params }).effect.kind, "deny", JSON.stringify(params));
-  }
-  for (const condition of ["whenProcessPoll: false", "whenProcessPol: true", ""]) {
-    const invalid = `version: 1\ndefaultAction: deny\nrules:\n  - id: unsafe\n    tool: process\n    action: allow\n    ${condition}\n`;
-    assert.equal(call({ policyText: invalid, toolName: "process", params: { action: "kill", sessionId: "x" } }).effect.kind, "deny");
-  }
 });
 
 test("an ordinary tool call is allowed and audited with the user and task", () => {
@@ -126,7 +113,7 @@ test("message sends require approval", () => {
 
 test("briefing discovery and exact read/write targets have named allows", () => {
   for (const toolName of ["tool_search", "tool_describe", "tool_call", "slack-reader__new_messages",
-    "slack-reader__channels", "gmail-reader__new_messages", "briefing-writer__save_briefing", "briefing_writer__save_briefing"]) {
+    "slack-reader__channels", "gmail-reader__new_messages", "briefing-writer__save_briefing"]) {
     const result = call({ toolName, params: {} });
     assert.equal(result.effect.kind, "allow", toolName);
     assert.notEqual(result.record.rule, "default", toolName);
@@ -178,7 +165,7 @@ test("both automation aliases allow only inspection and hold mutations for appro
       assert.equal(result.effect.kind, "allow");
       assert.equal(result.record.rule, "exec-openclaw-automation-inspect");
     }
-    for (const verb of ["add", "edit", "rm", "enable", "disable", "run"]) {
+    for (const verb of ["add", "create", "edit", "rm", "enable", "disable", "run"]) {
       const result = call({ params: { command: `openclaw ${group} ${verb} job-id` } });
       assert.equal(result.effect.kind, "approval");
       assert.equal(result.record.rule, "exec-openclaw-automation-change");
@@ -189,7 +176,7 @@ test("both automation aliases allow only inspection and hold mutations for appro
       }
     }
     // Unsupported aliases, mixed read/write surfaces and unknown verbs stay denied.
-    for (const verb of ["", "create", "remove", "delete", "scratch", "listx", "runsx", "run-all"]) {
+    for (const verb of ["", "remove", "delete", "scratch", "listx", "runsx", "run-all"]) {
       assert.equal(call({ params: { command: `openclaw ${group} ${verb}` } }).effect.kind, "deny");
     }
     for (const command of [

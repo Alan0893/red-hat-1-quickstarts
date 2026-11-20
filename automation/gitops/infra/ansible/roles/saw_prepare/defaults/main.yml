@@ -11,6 +11,8 @@ saw_prepare_vault_namespace: vault
 saw_prepare_vault_pod: vault-0
 saw_prepare_vault_token_secret: "{{ saw_vault_writer_secret | default('saw-vault-writer') }}"
 saw_prepare_vault_token_key: token
+# How often to check whether Vault came back sealed after a restart.
+saw_prepare_vault_unseal_schedule: "*/2 * * * *"
 saw_prepare_vault_ssh_path: hub/ssh
 saw_prepare_python_image: registry.access.redhat.com/ubi9/python-311@sha256:a0bdb55576fc5b8d6704279307817828ef027e1065533ceba133fe9516003a6c
 saw_prepare_mirror_tool_image: registry.redhat.io/ubi8/skopeo@sha256:7aef80fe88a7fdf028b20e7333f5e69c1f4bcadc5265950a1ad92abe44c5fb3c
@@ -23,3 +25,18 @@ saw_prepare_delay: 10
 saw_prepare_bootstrap_namespace: "{{ ocp4_workload_gitops_bootstrap_namespace | default('openshift-gitops') }}"
 saw_prepare_bootstrap_application: "{{ ocp4_workload_gitops_bootstrap_application_name | default('lb2142-ai-quickstarts') }}"
 saw_prepare_bootstrap_retries: 60
+# Container workspaces: publish this cluster's API, DNS and Keycloak addresses
+# for their network policies (what upstream's `make container-topology` finds).
+saw_prepare_container_enabled: >-
+  {{ (ocp4_workload_gitops_bootstrap_helm_values | default({})).get('saw', {}).get('container', {}).get('enabled', false) | bool }}
+saw_prepare_container_network_configmap: saw-container-network
+# VM workspaces need the golden image mirrored and an SSH key in Vault; a site
+# without OpenShift Virtualization (saw.virtualization.enabled false) has no VMs.
+saw_prepare_vm_enabled: >-
+  {{ (ocp4_workload_gitops_bootstrap_helm_values | default({})).get('saw', {}).get('virtualization', {}).get('enabled', true) | bool }}
+saw_prepare_keycloak_namespace: saw-keycloak
+saw_prepare_keycloak_realm: openshell
+saw_prepare_keycloak_admin_secret: openshell-keycloak-initial-admin
+# Upstream's fixed name for the relay registrar client, Secret and Job.
+saw_prepare_relay_provisioner: saw-relay-provisioner
+saw_prepare_gitops_namespace: "{{ ocp4_workload_gitops_bootstrap_namespace | default('openshift-gitops') }}"

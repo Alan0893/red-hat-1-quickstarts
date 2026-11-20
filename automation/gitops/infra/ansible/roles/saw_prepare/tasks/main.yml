@@ -5,6 +5,13 @@
     - ACTION | default('provision') == 'provision'
     - saw_prepare_enabled | bool
 
+- name: Publish the cluster's addresses for container workspace network policies
+  ansible.builtin.include_tasks: container_network.yml
+  when:
+    - ACTION | default('provision') == 'provision'
+    - saw_prepare_enabled | bool
+    - saw_prepare_container_enabled | bool
+
 - name: Preserve shared SAW infrastructure on removal
   ansible.builtin.debug:
     msg: SAW shared Vault keys and mirrored images are retained on destroy.

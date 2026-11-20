@@ -12,9 +12,6 @@
 {{- if not (has $mode (list "vm" "container")) -}}
 {{- fail "saw.deploymentMode must be vm or container" -}}
 {{- end -}}
-{{- if and (eq $mode "container") (eq (lower (toString (($saw.demo | default dict).provisioningEnabled))) "true") -}}
-{{- fail "personal-assistant demo requires saw.deploymentMode=vm" -}}
-{{- end -}}
 {{- $proxy := $saw.credentialProxyImage | default "" -}}
 {{- if and (eq $mode "vm") (not (regexMatch "^.+@sha256:[a-f0-9]{64}$" $proxy)) -}}
 {{- if not $proxy -}}{{- fail "saw.credentialProxyImage is required" -}}{{- end -}}
@@ -26,13 +23,69 @@
 {{- end -}}
 {{- $user := dict "name" $name -}}
 {{- $openshell := dict "credentialProxy" (dict "image" $proxy) "source" $source -}}
+{{- $seeded := eq (lower (toString (($saw.inferenceSeed | default dict).enabled))) "true" -}}
+{{- $site := dict -}}
 {{- if eq $mode "container" -}}
+{{- $c := $saw.container | default dict -}}
+{{- $net := required "saw.container.network is required (saw_prepare's saw-container-network ConfigMap)" $c.network -}}
+{{- $issuer := required "saw.container.network.issuer is required" $net.issuer -}}
+{{- $common := required "saw.container.network.commonEgress is required" $net.commonEgress -}}
+{{- $issuerRules := concat $common (required "saw.container.network.issuerEgress is required" $net.issuerEgress) -}}
+{{- /* The AIPCC OpenClaw image (2026.9.6, 896d1526) ships /sandbox as 0770 1000:0,
+       so a namespace UID/GID can't enter it. This is upstream's
+       container-notebook-image rebuild (chmod o+x /sandbox), published. */ -}}
+{{- $notebook := $c.notebookImage | default "ghcr.io/sauagarwa/saw-openclaw@sha256:05f17f3872f864e44231fb3cea30cd4dd2ba9887b382a67b261f068a234b79a2" -}}
+{{- /* SAW kubernetes-runtime built from secure-agent-workspace ca2d395d (native OpenShell providers). */ -}}
+{{- $runtime := $c.runtimeImage | default "quay.io/sauagarw/saw-kubernetes-runtime@sha256:476c77c93c3997b0461b0eb5ab1917f1d6d204ec89081112a375f8fa929ced3d" -}}
+{{- range $image := list $notebook $runtime -}}
+{{- if not (regexMatch "^.+@sha256:[a-f0-9]{64}$" $image) -}}
+{{- fail (printf "%s must be pinned by digest" $image) -}}
+{{- end -}}
+{{- end -}}
+{{- $priority := toString (required "saw.container.anpPriority is required (saw_tenant_prepare)" $c.anpPriority) -}}
+{{- if not (regexMatch "^[0-9]{1,2}$" $priority) -}}
+{{- fail "saw.container.anpPriority must be 0-99" -}}
+{{- end -}}
+{{- $demoProvision := eq (include "tenant.sawDemo" $) "provision" -}}
+{{- $profile := ternary "custom-inference" ($saw.profile | default "data-science") $seeded -}}
+{{- if $demoProvision -}}
+{{- if not $seeded -}}{{- fail "the personal-assistant demo needs saw.inferenceSeed for its model" -}}{{- end -}}
+{{- $profile = "demo-assistant" -}}
+{{- end -}}
 {{- $_ := set $user "ownerSubject" (required "saw.ownerSubject is required for container deployment" $saw.ownerSubject) -}}
-{{- $_ := set $user "registration" (required "saw.registration is required for container deployment" $saw.registration) -}}
-{{- $_ := set $user "installationID" (required "saw.installationID is required for container deployment" $saw.installationID) -}}
-{{- $_ := set $user "pruneOnRemove" true -}}
-{{- $_ := set $user "profiles" (list (required "saw.profile is required for container deployment" $saw.profile)) -}}
+{{- $_ := set $user "profiles" (list $profile) -}}
+{{- if $seeded -}}
+{{- /* The runtime takes the model from public inputs, never from the Vault Secret. */ -}}
+{{- $_ := set $user "modelInputs" (dict "inference.model" (required "saw.inferenceSeed.secretData.model is required" (($saw.inferenceSeed.secretData | default dict).model))) -}}
+{{- end -}}
 {{- $_ := set $user "values" (dict "deployment" (dict "mode" "container")) -}}
+{{- /* The shared site; saw_prepare discovered the network rules and issuer. */ -}}
+{{- $site = fromYaml (.Files.Get "files/container-defaults.yaml") -}}
+{{- $_ := set $site "profileImageOverrides" (dict $profile (dict "notebook" $notebook)) -}}
+{{- $_ := set $site.automaticEnrollment "image" $runtime -}}
+{{- $_ := set $site.automaticEnrollment.relay "issuer" $issuer -}}
+{{- $_ := set $site.automaticEnrollment.relay "egress" $issuerRules -}}
+{{- $_ := set $site.stack.policy.values.network "priority" (int $priority) -}}
+{{- $_ := set $site.stack.identity.values.network "bootstrapEgress" $common -}}
+{{- /* The supervisor reaches providers itself; OpenShell decides which hosts.
+       Public HTTPS is open (stack.yaml); routes on this cluster resolve to the
+       router's private addresses, so pass those on 443 as well. */ -}}
+{{- $routers := list -}}
+{{- range $rule := $net.issuerEgress -}}{{- range $peer := $rule.to -}}{{- if $peer.ipBlock -}}
+{{- $routers = append $routers $peer.ipBlock.cidr -}}
+{{- end -}}{{- end -}}{{- end -}}
+{{- $_ := set $site.stack.policy.values.network "egress" (append $site.stack.policy.values.network.egress (dict "name" "cluster-routes" "to" (list (dict "networks" ($routers | uniq | sortAlpha))) "ports" (list (dict "portNumber" (dict "protocol" "TCP" "port" 443))))) -}}
+{{- $gw := $site.stack.gateway.values -}}
+{{- $_ := set $gw "oidc" (dict "issuerUrl" $issuer) -}}
+{{- $_ := set $gw.kubernetes.network "gatewayEgress" (concat $gw.kubernetes.network.gatewayEgress $issuerRules) -}}
+{{- $_ := set $gw.kubernetes.storage "className" (required "saw.container.storageClass is required" $c.storageClass) -}}
+{{- $_ := set $site.stack.audit.values "storageClass" $c.storageClass -}}
+{{- $_ := set $site.stack.audit.values "exchangeStorageClass" (required "saw.container.sharedStorageClass (ReadWriteMany) is required" $c.sharedStorageClass) -}}
+{{- if $saw.inferenceHost -}}
+{{- $boundary := dict "inferenceBaseURL" (printf "https://%s/v1" $saw.inferenceHost) "allowHosts" (list $saw.inferenceHost) -}}
+{{- /* The selected profile (custom-inference, or demo-assistant for the demo) uses the same endpoint. */ -}}
+{{- $_ := set $site "profileBoundaries" (dict "custom-inference" $boundary $profile $boundary) -}}
+{{- end -}}
 {{- end -}}
 {{- $defaults := dict
   "users" (list $user)
@@ -40,7 +93,9 @@
   "global" (dict "repoURL" $repo "targetRevision" $revision "vpArgoNamespace" .Values.gitops.namespace "clusterDomain" $domain)
   "defaults" (dict "openshellSaw" $openshell) -}}
 {{- if eq $mode "container" -}}
-{{- $_ := set $defaults "containerSites" (dict $name (required "saw.containerSite is required for container deployment" $saw.containerSite)) -}}
+{{- $net := $saw.container.network -}}
+{{- $_ := set $defaults "containerDefaults" $site -}}
+{{- $_ := set $defaults "projection" (dict "enabled" true "egress" $net.commonEgress "applicationSetControllerLabels" (required "saw.container.network.applicationSetControllerLabels is required" $net.applicationSetControllerLabels)) -}}
 {{- end -}}
 {{- if $saw.inferenceHost -}}
 {{- if not (regexMatch "^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$" $saw.inferenceHost) -}}
@@ -49,7 +104,7 @@
 {{- $_ := set $defaults.defaults.openshellSaw "egress" (dict "extraAllow" (list $saw.inferenceHost)) -}}
 {{- $_ := set $defaults.defaults.openshellSaw.credentialProxy "customInferenceHost" $saw.inferenceHost -}}
 {{- end -}}
-{{- if eq (lower (toString (($saw.inferenceSeed | default dict).enabled))) "true" -}}
+{{- if $seeded -}}
 {{- $_ := set (index $defaults.users 0) "vaultPrefix" (printf "secret/data/hub/saw-%s" $name) -}}
 {{- $_ := set $defaults.global "webSearch" (dict "enabled" false) -}}
 {{- $_ := set $defaults.defaults "profiles" (list "custom-inference") -}}
@@ -59,10 +114,15 @@
 {{- $_ := set $values.defaults "profiles" (list "custom-inference") -}}
 {{- $_ := set $values.global "webSearch" (dict "enabled" false) -}}
 {{- end -}}
+{{- if eq $mode "container" -}}
+{{- /* saw-users appends saw-<name>/<registration> to a container user's base. */ -}}
+{{- $_ := set (index $values.users 0) "vaultPrefix" "secret/data/hub" -}}
+{{- end -}}
 {{- $_ := set $values.global "repoURL" $repo -}}
 {{- $_ := set $values.global "targetRevision" $revision -}}
 {{- $_ := set $values.global "vpArgoNamespace" .Values.gitops.namespace -}}
-{{- if eq (lower (toString (($saw.demo | default dict).enabled))) "true" -}}
+{{- $demoMode := include "tenant.sawDemo" $ -}}
+{{- if $demoMode -}}
 {{- $egress := $values.defaults.openshellSaw.egress | default dict -}}
 {{- $hosts := $egress.extraAllow | default list -}}
 {{- range $service := list "mailpit" "mattermost" "radicale" -}}
@@ -71,10 +131,13 @@
 {{- $_ := set $egress "extraAllow" ($hosts | uniq) -}}
 {{- $_ := set $values.defaults.openshellSaw "egress" $egress -}}
 {{- $demo := $saw.demo | default dict -}}
-{{- $provision := eq (lower (toString $demo.provisioningEnabled)) "true" -}}
+{{- $provision := eq $demoMode "provision" -}}
 {{- if $provision -}}
 {{- $_ := set $values.defaults "profiles" (list "demo-assistant") -}}
+{{- if eq $mode "vm" -}}
+{{- /* Container users already have their registration-scoped prefix. */ -}}
 {{- $_ := set (index $values.users 0) "vaultPrefix" (printf "secret/data/hub/saw-%s" $name) -}}
+{{- end -}}
 {{- $_ := set $values.defaults.openshellSaw "sourceReaders" (dict "enabled" true "demoId" $name "tenantUser" $name) -}}
 {{- end -}}
 {{- end -}}
@@ -84,6 +147,10 @@ kind: Application
 metadata:
   name: {{ printf "saw-users-%s" .Values.tenant.name | quote }}
   namespace: {{ .Values.gitops.namespace | quote }}
+  # Deleting the tenant must also delete the workspaces this app created
+  # (VM apps, or the container projector and everything it generated).
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io/foreground
 spec:
   project: default
   source:

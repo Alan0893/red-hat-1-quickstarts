@@ -19,9 +19,11 @@
     },
     "mode": {
       "enum": [
-        "container"
+        "container",
+        "kata"
       ]
     },
+    "workloadRuntimeClassName": {"type": "string"},
     "network": {
       "type": "object",
       "additionalProperties": false,
@@ -40,6 +42,9 @@
           "items": {
             "$ref": "#/definitions/egressRule"
           }
+        },
+        "publicHTTPS": {
+          "type": "boolean"
         }
       },
       "required": [

@@ -15,6 +15,20 @@ class WorkspaceError(ValueError):
     """Invalid workspace configuration or immutable publication."""
 
 
+SAFE_FAILURE_REASONS = frozenset({
+    "ProfileRejected", "InvalidPlan", "PlacementRejected", "IdentityConflict",
+    "InvalidIntent", "StaleIntent", "ReconcilerStateRejected", "GatewayMismatch",
+    "ProviderProfileMismatch", "WorkspaceRejected", "ProviderRejected",
+    "SandboxRejected", "SandboxStateMismatch", "SandboxDrift", "CoreRejected",
+    "CoreFailure",
+})
+SAFE_RPC_CODES = frozenset({
+    "NOT_FOUND", "ALREADY_EXISTS", "UNAVAILABLE", "DEADLINE_EXCEEDED", "ABORTED",
+    "RESOURCE_EXHAUSTED", "PERMISSION_DENIED", "UNAUTHENTICATED", "INVALID_ARGUMENT",
+    "FAILED_PRECONDITION", "UNKNOWN",
+})
+
+
 def enabled_catalog_sandboxes(profile):
     for workspace in profile.get("workspaces", []):
         if workspace.get("enabled"):
@@ -109,17 +123,18 @@ def enrolled_site(site, ws, read):
         if data:
             raise WorkspaceError("cannot disable enrollment of a bound workspace; use desiredState")
         return fresh
-    for key, kind in (("reference", dict), ("relay", dict), ("revision", str),
-                      ("image", str), ("buildNamespace", str)):
+    auto = a.get("autoApprove") is True
+    for key, kind in ((() if auto else (("reference", dict),)) + (("relay", dict), ("revision", str),
+                      ("image", str), ("buildNamespace", str))):
         if not isinstance(a.get(key), kind) or not a[key]:
             raise WorkspaceError(f"container site for {ws['name']} requires automaticEnrollment.{key}")
     if not data:
         return fresh
     bound=json.loads(data["binding.json"])
-    if set(bound)!={"registration","intent","approved","gatewayCA"} or bound["registration"]!=reg or set(bound["approved"])!=set(a["reference"]):
+    if set(bound)!={"registration","intent","approved","gatewayCA"} or bound["registration"]!=reg or (not auto and set(bound["approved"])!=set(a["reference"])):
         raise WorkspaceError("invalid published enrollment")
     intent=bound["intent"]
-    if intent["bindings"]["ownerID"]!=install or intent["bindings"]["namespace"]!="saw-"+ws["name"] or intent["bindings"]["ownerSubject"]!=ws["ownerSubject"] or intent["profileRef"]["sha256"]!=site.get("selectedDigest",a.get("profileSHA256")):
+    if intent["bindings"]["ownerID"]!=install or intent["bindings"]["namespace"]!="saw-"+ws["name"] or intent["bindings"]["ownerSubject"]!=ws["ownerSubject"] or (not auto and intent["profileRef"]["sha256"]!=site.get("selectedDigest",a.get("profileSHA256"))):
         raise WorkspaceError("published intent does not belong to this workspace")
     subjects = {target["subjectMap"]:publication(target["subjectMap"]).get("subject", "")
                 for target in site.get("targets",{}).values() if target["ui"]}
@@ -142,7 +157,7 @@ def previous_child(application, appset, owner):
                        and ref.get("name") == appset and ref.get("controller") is True for ref in meta.get("ownerReferences", []))):
         raise WorkspaceError("cannot verify existing workspace Application ownership")
     source = application["spec"]["source"]
-    if source.get("path") != "charts/saw-users":
+    if source.get("path") != "automation/gitops/tenant/saw/charts/saw-users":
         raise WorkspaceError("unexpected workspace Application source")
     values = json.loads(source["helm"]["values"])
     users = values["users"]
@@ -151,6 +166,18 @@ def previous_child(application, appset, owner):
     if not isinstance(values, dict) or values["global"]["targetRevision"] != source["targetRevision"]:
         raise WorkspaceError("existing Application revision does not match its values")
     return values
+
+
+def validate_runtime_placement(mode, site):
+    runtime = site.get("kataRuntimeClass")
+    if mode == "kata":
+        if (not isinstance(runtime, dict) or set(runtime) != {"name", "uid", "sha256"}
+                or not re.fullmatch(r"[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?", str(runtime["name"]))
+                or not re.fullmatch(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}", str(runtime["uid"]))
+                or not re.fullmatch(r"[a-f0-9]{64}", str(runtime["sha256"]))):
+            raise WorkspaceError("kata requires a reviewed site RuntimeClass")
+    elif runtime is not None:
+        raise WorkspaceError("container registration cannot use a Kata approval")
 
 
 def project_workspace(workspace, defaults, site, catalog, read=None, previous=None):
@@ -192,7 +219,7 @@ def _project_workspace(workspace, defaults, site, catalog, read=None):
     """
     ws = {**workspace, "values": {**workspace.get("values", {})}}
     mode = ws["values"].get("deployment", {}).get("mode", "vm")
-    if mode not in {"vm", "container"}:
+    if mode not in {"vm", "container", "kata"}:
         raise WorkspaceError("unsupported workspace deployment mode")
     ws["values"]["deployment"] = {"mode": mode}
     # This map belongs to the operator's installation configuration, never the
@@ -206,19 +233,35 @@ def _project_workspace(workspace, defaults, site, catalog, read=None):
     values = {**{k:v for k,v in defaults.items() if k != "workspaceRevisions"}, "users": [ws]}
     if ws.get("name") in revisions:
         values["global"] = {**defaults.get("global", {}), "targetRevision": revisions[ws["name"]]}
-    if mode != "container":
+    if mode == "vm":
         return values
     if not isinstance(site, dict) or not site:
         raise WorkspaceError(f"container site is missing for {ws['name']}")
     if ws.get("ownerSubject") != site.get("subject"):
         raise WorkspaceError("container site must bind the resolved owner subject")
+    validate_runtime_placement(mode, site)
     automatic = site.get("automaticEnrollment", {})
     selected, *extra = ws.get("profiles", []) or [None]
-    foundation = automatic.get("enabled") is False
+    foundation = automatic.get("enabled") is False or automatic.get("autoApprove") is True
     if extra or selected not in catalog or not foundation and selected not in automatic.get("approvedProfiles", {}):
         raise WorkspaceError("container requires one approved BOM profile")
     if not ws.get("registration") or not ws.get("installationID"):
         raise WorkspaceError("container requires a registration and installation identity")
+    # As the portal does at registration: a dedicated-endpoint profile (such as
+    # custom-inference) has no web-search credential unless the entry asks for it.
+    if "dedicatedEndpointSecrets" in catalog[selected] and "webSearch" not in ws:
+        ws["webSearch"] = {"enabled": False}
+    # The runtime compiles the model from public inputs, never from the Secret.
+    # The portal reads it from the form; a static entry must name it.
+    given = ws.get("initialModelInputs") if ws.get("lifecycleVersion") == 1 else ws.get("modelInputs")
+    for _, sandbox in enabled_catalog_sandboxes(catalog[selected]):
+        key = sandbox.get("modelInput")
+        if not key:
+            continue
+        secret, field = key.split(".", 1)
+        definition = next((f for f in catalog[selected]["secrets"][secret]["fields"] if f["key"] == field), {})
+        if definition.get("required") and not definition.get("default") and not (given or {}).get(key):
+            raise WorkspaceError(f"{ws['name']}: set modelInputs.{key} (the model this profile requires)")
     overrides = site.get("profileImageOverrides", {}).get(selected, {})
     if overrides:
         ws["imageOverrides"] = overrides
@@ -232,8 +275,14 @@ def _project_workspace(workspace, defaults, site, catalog, read=None):
         target["image"] = overrides.get(target["sandbox"], target["image"])
     boundary = site.get("profileBoundaries", {}).get(selected)
     if boundary:
-        site = {**site, "providerAllowHosts": boundary["allowHosts"],
-                "automaticEnrollment": {**automatic, "reference": boundary["reference"]}}
+        # autoApprove sites have no operator-reviewed reference to pin.
+        reviewed = {"reference": boundary["reference"]} if "reference" in boundary or \
+            automatic.get("autoApprove") is not True else {}
+        site = {**site, "automaticEnrollment": {**automatic, **reviewed}}
+        # A static entry takes the site-approved endpoint unless it names one.
+        if (not ws.get("customInferenceURL") and boundary.get("inferenceBaseURL")
+                and any(sb.get("endpointInput") for _, sb in enabled_catalog_sandboxes(catalog[selected]))):
+            ws["customInferenceURL"] = boundary["inferenceBaseURL"]
     if ws.get("customInferenceURL"):
         if not boundary or boundary.get("inferenceBaseURL") != ws["customInferenceURL"]:
             raise WorkspaceError("endpoint differs from the site-approved custom inference URL")
@@ -290,7 +339,7 @@ def container_status(read_resource, entry, site, argo_ns, domain, ping, catalog=
     bound = bool(reg and site and gen and intent.get("generation") == rev
                  and intent.get("bindings", {}).get("ownerSubject") == site["subject"]
                  and intent.get("bindings", {}).get("namespace") == ns
-                 and intent.get("bindings", {}).get("mode") == "container"
+                 and intent.get("bindings", {}).get("mode") == entry.get("values", {}).get("deployment", {}).get("mode", "container")
                  and intent.get("bindings", {}).get("ownerID") == entry["installationID"])
     desired = entry.get("desiredState", "Running")
     bound = bound and intent.get("desiredState") == desired
@@ -330,11 +379,21 @@ def container_status(read_resource, entry, site, argo_ns, domain, ping, catalog=
             waiting = True
         steps.append(dict(id=stage, title=title, detail=title, state=state))
     failed = bool(current and st.get("phase") == "Blocked" or app_ok and app_status.get("operationState", {}).get("phase") in ("Error", "Failed"))
-    message = "Container reconciliation failed" if failed else next((s["title"] for s in steps if s["state"] == "active"), "Workspace ready")
+    if failed:
+        reason = st.get("reason")
+        if isinstance(reason, str) and reason in SAFE_FAILURE_REASONS:
+            message = f"Container reconciliation failed ({reason})"
+        elif (reason == "CoreRpcRejected" and isinstance(st.get("rpcCode"), str)
+              and st["rpcCode"] in SAFE_RPC_CODES):
+            message = f"Container reconciliation failed (OpenShell {st['rpcCode']})"
+        else:
+            message = "Container reconciliation failed"
+    else:
+        message = next((s["title"] for s in steps if s["state"] == "active"), "Workspace ready")
     if stopped and not failed:
         message = "Workspace stopped"
         phase = "stopped"
-    return dict(user=user, deploymentMode="container", phase="failed" if failed else phase, title=message,
+    return dict(user=user, deploymentMode=entry.get("values", {}).get("deployment", {}).get("mode", "container"), phase="failed" if failed else phase, title=message,
                 registration=reg, generation=rev, observedGeneration=st.get("observedGeneration"),
                 desiredState=desired, modelInputs=entry.get("modelInputs", {}),
                 message=message, text=message, ready=ready and not failed, failed=failed, steps=steps,

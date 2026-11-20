@@ -1,0 +1,51 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: saw-vault-unseal
+  namespace: {{ saw_prepare_vault_namespace | to_json }}
+  labels:
+    app.kubernetes.io/part-of: saw-prepare
+spec:
+  schedule: {{ saw_prepare_vault_unseal_schedule | to_json }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 60
+      ttlSecondsAfterFinished: 600
+      template:
+        spec:
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          securityContext:
+            runAsNonRoot: true
+            seccompProfile: {type: RuntimeDefault}
+          containers:
+            - name: unseal
+              image: {{ saw_prepare_python_image | to_json }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: {drop: [ALL]}
+              env:
+                - {name: VAULT_URL, value: {{ ('https://vault.' ~ saw_prepare_vault_namespace ~ '.svc:8200') | to_json }}}
+              command: [python, -c]
+              args:
+                - |
+{{ lookup('ansible.builtin.file', role_path ~ '/files/unseal_vault.py') | indent(18, true) }}
+              resources:
+                requests: {cpu: 10m, memory: 32Mi}
+                limits: {memory: 64Mi}
+              volumeMounts:
+                - {name: ca, mountPath: /ca, readOnly: true}
+                - {name: state, mountPath: /state, readOnly: true}
+          volumes:
+            - name: ca
+              configMap: {name: saw-vault-service-ca}
+            # Only the stored init response; the pod gets no API token.
+            - name: state
+              secret:
+                secretName: {{ saw_prepare_vault_bootstrap_secret | to_json }}
+                items: [{key: init.json, path: init.json}]

@@ -381,16 +381,56 @@ class DemoProvisioningTests(unittest.TestCase):
         self.assertNotEqual(result.returncode,0)
         self.assertIn('saw.account.enabled',result.stderr)
 
-    def test_demo_rejects_unsupported_container_mode_before_provisioning(self):
+    def container_values(self):
         values = self.tenant_values()
-        values['saw'].update({'deploymentMode': 'container', 'ownerSubject': 'subject-test',
-                              'registration': 'a' * 16, 'installationID': 'installation-test',
-                              'profile': 'data-science', 'containerSite': {'subject': 'subject-test'}})
-        result = subprocess.run(['helm', 'template', 'test', str(ROOT / 'tenant/bootstrap'), '-f', '-'],
-                                input=yaml.safe_dump(values), text=True, capture_output=True)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('personal-assistant demo requires saw.deploymentMode=vm', result.stderr)
+        api = {'to': [{'ipBlock': {'cidr': '172.30.0.1/32'}}], 'ports': [{'protocol': 'TCP', 'port': 443}]}
+        router = {'to': [{'ipBlock': {'cidr': '10.0.0.5/32'}}], 'ports': [{'protocol': 'TCP', 'port': 443}]}
+        # saw_tenant_prepare creates container accounts, so account.enabled is false.
+        values['saw']['account']['enabled'] = False
+        values['saw']['inferenceSeed']['secretData']['url'] = 'https://model.example/v1'
+        values['saw'].update({'deploymentMode': 'container', 'ownerSubject': '11111111-1111-4111-8111-111111111111',
+            'container': {'network': {'issuer': 'https://openshell-keycloak-ingress-saw-keycloak.apps.test.example/realms/openshell',
+                                      'commonEgress': [api], 'issuerEgress': [router],
+                                      'applicationSetControllerLabels': {'app.kubernetes.io/name': 'appset'}},
+                          'anpPriority': 23, 'storageClass': 'rbd', 'sharedStorageClass': 'cephfs'}})
+        return values
 
+    def test_container_demo_uses_the_demo_profile_and_registration_scoped_credentials(self):
+        import hashlib
+        values = self.container_values()
+        docs = render('tenant/bootstrap', values)
+        app = next(d for d in docs if d['kind'] == 'Application' and d['metadata']['name'].startswith('saw-users-'))
+        saw_users = yaml.safe_load(app['spec']['source']['helm']['values'])
+        user = saw_users['users'][0]
+        self.assertEqual(user['profiles'], ['demo-assistant'])
+        self.assertEqual(user['vaultPrefix'], 'secret/data/hub')
+        self.assertEqual(saw_users['defaults']['openshellSaw']['sourceReaders'],
+                         {'enabled': True, 'demoId': 'user-test', 'tenantUser': 'user-test'})
+        site = saw_users['containerDefaults']
+        self.assertIn('notebook', site['profileImageOverrides']['demo-assistant'])
+        self.assertEqual(site['profileBoundaries']['demo-assistant']['inferenceBaseURL'], 'https://model.example/v1')
+        job = next(d for d in docs if d['kind'] == 'Job' and d['metadata']['name'] == 'saw-user-test-demo-seed')
+        registration = hashlib.sha256(b'user-test:1').hexdigest()[:16]
+        self.assertIn({'name': 'VAULT_PATH', 'value': 'hub/saw-user-test/' + registration},
+                      job['spec']['template']['spec']['containers'][0]['env'])
+        inference = next(d for d in docs if d['kind'] == 'Job' and d['metadata']['name'].endswith('inference-seed'))
+        self.assertIn('hub/saw-user-test/' + registration + '/inference', str(inference))
+
+    def test_container_tenants_get_the_demo_by_default(self):
+        def profiles(values):
+            docs = render('tenant/bootstrap', values)
+            app = next(d for d in docs if d['kind'] == 'Application' and d['metadata']['name'].startswith('saw-users-'))
+            seeded = any(d['kind'] == 'Job' and d['metadata']['name'] == 'saw-user-test-demo-seed' for d in docs)
+            return yaml.safe_load(app['spec']['source']['helm']['values'])['users'][0]['profiles'], seeded
+        values = self.container_values()
+        del values['saw']['demo']
+        self.assertEqual(profiles(values), (['demo-assistant'], True))
+        values['saw']['demo'] = {'enabled': False}
+        self.assertEqual(profiles(values), (['custom-inference'], False))
+        values = self.container_values()
+        del values['saw']['demo']
+        values['saw']['inferenceSeed']['enabled'] = False
+        self.assertEqual(profiles(values)[1], False)
 
 if __name__ == '__main__':
     unittest.main()

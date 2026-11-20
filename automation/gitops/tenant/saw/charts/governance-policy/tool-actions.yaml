@@ -52,12 +52,14 @@ rules:
     action: approval
     whenCommandMatches:
       - openclaw cron add
+      - openclaw cron create
       - openclaw cron edit
       - openclaw cron rm
       - openclaw cron enable
       - openclaw cron disable
       - openclaw cron run
       - openclaw automations add
+      - openclaw automations create
       - openclaw automations edit
       - openclaw automations rm
       - openclaw automations enable
@@ -70,11 +72,6 @@ rules:
     action: approval
     whenCommandMatches:
       - openclaw agents set-identity
-  # Poll yielded commands without allowing process input or termination.
-  - id: process-poll
-    tool: process
-    action: allow
-    whenProcessPoll: true
   # OpenClaw 2026.9.2 runs the hook again for each dispatched target.
   # These discovery rules never replace the target's own named rule.
   - id: tool-search

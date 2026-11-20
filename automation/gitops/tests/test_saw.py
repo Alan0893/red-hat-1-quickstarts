@@ -112,6 +112,26 @@ class SawIntegrationTests(unittest.TestCase):
         self.assertEqual(secret['spec']['data'][0]['secretKey'], 'ca-bundle.crt')
         self.assertEqual(secret['spec']['data'][0]['remoteRef']['property'], 'ca-bundle.crt')
 
+    def test_infra_without_virtualization_installs_no_kubevirt(self):
+        chart = ROOT / 'infra/bootstrap'
+        base = {'saw': {'enabled': True, 'clusterDomain': 'test.example', 'keycloak': {'postgresPassword': 'example-only'}}}
+        def parts(values):
+            docs = render(chart, values)
+            return ({x['metadata']['name'] for x in docs if x['kind'] == 'Application'},
+                    {x['spec']['name'] for x in docs if x['kind'] == 'Subscription'},
+                    {x['metadata']['name'] for x in docs if x['kind'] == 'Namespace'})
+        apps, subscriptions, namespaces = parts(base)
+        self.assertIn('saw-virtualization', apps)
+        self.assertIn('kubevirt-hyperconverged', subscriptions)
+        self.assertIn('openshift-cnv', namespaces)
+        base['saw']['virtualization'] = {'enabled': False}
+        apps, subscriptions, namespaces = parts(base)
+        self.assertNotIn('saw-virtualization', apps)
+        self.assertNotIn('kubevirt-hyperconverged', subscriptions)
+        self.assertNotIn('openshift-cnv', namespaces)
+        self.assertIn('saw-keycloak', apps)
+        self.assertIn('rhbk-operator', subscriptions)
+
     def test_infra_opt_in_and_children(self):
         chart = ROOT / 'infra/bootstrap'
         self.assertEqual([x['kind'] for x in render(chart, {})], ['ConfigMap', 'ArgoCD'])
@@ -218,19 +238,18 @@ class SawIntegrationTests(unittest.TestCase):
         self.assertEqual(proxy['spec']['template']['spec']['containers'][0]['image'], PROXY)
 
     def test_tenant_can_select_container_workspace_mode(self):
+        issuer = 'https://openshell-keycloak-ingress-saw-keycloak.apps.test.example/realms/openshell'
+        api = {'to': [{'ipBlock': {'cidr': '172.30.0.1/32'}}], 'ports': [{'protocol': 'TCP', 'port': 443}]}
+        keycloak = {'to': [{'ipBlock': {'cidr': '10.0.0.5/32'}}], 'ports': [{'protocol': 'TCP', 'port': 443}]}
         saw = {
             'deploymentMode': 'container', 'userName': 'user-7kzmd',
             'clusterDomain': 'test.example',
             'ownerSubject': '11111111-1111-4111-8111-111111111111',
-            'registration': 'abcdef0123456789',
-            'installationID': '22222222-2222-4222-8222-222222222222',
-            'profile': 'data-science',
-            'containerSite': {
-                'subject': '11111111-1111-4111-8111-111111111111',
-                'automaticEnrollment': {
-                    'enabled': False,
-                    'approvedProfiles': {'data-science': 'a' * 64},
-                },
+            'container': {
+                'network': {'issuer': issuer, 'commonEgress': [api], 'issuerEgress': [keycloak],
+                            'applicationSetControllerLabels': {'app.kubernetes.io/name': 'openshift-gitops-applicationset-controller'}},
+                'anpPriority': 23,
+                'storageClass': 'rbd', 'sharedStorageClass': 'cephfs',
             },
         }
         docs = render(ROOT / 'tenant/bootstrap', {'rag': None, 'tenant': {'name': '7kzmd'}, 'saw': saw})
@@ -238,11 +257,30 @@ class SawIntegrationTests(unittest.TestCase):
         values = yaml.safe_load(app['spec']['source']['helm']['values'])
         user = values['users'][0]
         self.assertEqual(user['values']['deployment']['mode'], 'container')
-        self.assertNotIn('vmSource', saw)
-        self.assertEqual(values['containerSites']['user-7kzmd']['subject'], saw['ownerSubject'])
+        self.assertEqual(user['profiles'], ['data-science'])
+        self.assertEqual(user['vaultPrefix'], 'secret/data/hub')
+        site = values['containerDefaults']
+        gateway = site['stack']['gateway']['values']
+        self.assertEqual(gateway['oidc']['issuerUrl'], issuer)
+        self.assertEqual(gateway['kubernetes']['network']['gatewayEgress'][-2:], [api, keycloak])
+        self.assertEqual(site['automaticEnrollment']['relay']['egress'], [api, keycloak])
+        self.assertEqual(site['stack']['identity']['values']['network']['bootstrapEgress'], [api])
+        self.assertNotIn('proxy', site['stack'])
+        self.assertNotIn('providerAllowHosts', site)
+        routes = site['stack']['policy']['values']['network']['egress'][-1]
+        self.assertEqual(routes['name'], 'cluster-routes')
+        self.assertEqual(routes['to'], [{'networks': [keycloak['to'][0]['ipBlock']['cidr']]}])
+        self.assertEqual(routes['ports'], [{'portNumber': {'protocol': 'TCP', 'port': 443}}])
+        self.assertEqual(site['stack']['policy']['values']['network']['priority'], 23)
+        self.assertEqual(site['stack']['audit']['values']['exchangeStorageClass'], 'cephfs')
+        self.assertEqual(values['projection']['egress'], [api])
+        self.assertRegex(site['profileImageOverrides']['data-science']['notebook'], r'@sha256:[a-f0-9]{64}$')
         child_apps = child(app)
-        runtime = next(d for d in child_apps if d['kind'] == 'Application' and d['metadata']['name'] == 'saw-user-7kzmd')
-        self.assertTrue(runtime['spec']['source']['path'].endswith('/saw-portal-container'))
+        self.assertTrue(any(d['kind'] == 'ApplicationSet' for d in child_apps))
+        # Every discovered input is required, so a cluster without saw_prepare fails early.
+        del saw['container']['network']
+        with self.assertRaises(subprocess.CalledProcessError):
+            render(ROOT / 'tenant/bootstrap', {'rag': None, 'tenant': {'name': '7kzmd'}, 'saw': saw})
 
     def test_invalid_identity_and_unpinned_inputs_fail(self):
         base = {'rag': None, 'saw': {'userName': '7kzmd', 'clusterDomain': 'test.example', 'credentialProxyImage': PROXY, 'vmSource': {'dataSource': 'golden'}}}
@@ -296,10 +334,20 @@ class SawRefreshTests(unittest.TestCase):
             files = {'charts/openshift-cnv/templates/hyperconverged.yaml': 'apiVersion: hco.kubevirt.io/v1beta1\nkind: HyperConverged\nmetadata:\n  name: kubevirt-hyperconverged\n  namespace: openshift-cnv\nspec: {}\n',
                      'charts/saw-users/templates/applications.yaml': 'path: "charts/openshell-saw"\n',
                      'charts/openshell-rhdh/templates/applicationset.yaml': 'path: charts/saw-users\n',
+                     # Container-mode files that name chart paths.
+                     'charts/saw-users/templates/projector.yaml': 'path: charts/saw-users\n',
+                     'charts/saw-portal-container/templates/stack.yaml': 'path: charts/saw-identity\n',
+                     'charts/saw-portal-container/templates/relay.yaml': 'path: charts/saw-workspace-relay\n',
+                     'charts/saw-portal-container/templates/enrolled-runtime.yaml': 'path: charts/saw-kubernetes-controller\n',
+                     'charts/saw-users/templates/_helpers.tpl': '{{- if eq .path "charts/saw-portal-container" }}{{ end }}\n',
+                     'charts/saw-users/files/workspace.py': 'PATH = "charts/saw-users"\n',
+                     'charts/openshell-rhdh/files/workspace.py': 'PATH = "charts/saw-users"\n',
                      'charts/openshell-keycloak/values.yaml': 'image: registry.access.redhat.com/ubi9/python-311:latest\n',
                      'charts/openshell-keycloak/templates/postgres.yaml': 'username: {{ .Values.postgres.username }}\npassword: {{ .Values.postgres.password }}\n',
                      'image-builder-charts/helm/example/Chart.yaml': 'name: example\nversion: 0.1.0\n',
-                     'overrides/governance-profiles/kustomization.yaml': 'kind: Kustomization\n'}
+                     'overrides/governance-profiles/kustomization.yaml': 'kind: Kustomization\n',
+                     # The refresh runs upstream's catalog generator; the fixture has no profiles.
+                     'scripts/saw-profile-catalog.py': 'raise SystemExit(0)\n'}
             patches = json.loads((ROOT / 'saw-patches.json').read_text())
             for patch in patches:
                 files[patch['file']] = (ROOT / 'tenant/saw' / patch['file']).read_text()
@@ -309,6 +357,9 @@ class SawRefreshTests(unittest.TestCase):
                 contents = files[patch['file']]
                 self.assertEqual(contents.count(patch['new']), 1, patch['file'])
                 files[patch['file']] = contents.replace(patch['new'], patch['old'])
+            # Vendored copies also carry the updater's chart path rewrite; undo it too.
+            for patch in patches:
+                files[patch['file']] = files[patch['file']].replace('"automation/gitops/tenant/saw/charts/', '"charts/')
             for name, contents in files.items():
                 path = source / name
                 path.parent.mkdir(parents=True, exist_ok=True)

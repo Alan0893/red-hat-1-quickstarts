@@ -47,7 +47,13 @@ def update(source, ref, destination):
         shutil.copytree(checkout / 'charts', stage / 'charts')
         shutil.copytree(checkout / 'image-builder-charts/helm', stage / 'image-builders')
         shutil.copytree(checkout / 'overrides/governance-profiles', stage / 'governance-profiles')
-        for relative in ['charts/saw-users/templates/applications.yaml', 'charts/openshell-rhdh/templates/applicationset.yaml']:
+        # Applications the charts create point at upstream's charts/ directory;
+        # here the charts live under PATH_PREFIX. The rest are container mode.
+        for relative in ['charts/saw-users/templates/applications.yaml', 'charts/openshell-rhdh/templates/applicationset.yaml',
+                         'charts/saw-users/templates/projector.yaml', 'charts/saw-portal-container/templates/stack.yaml',
+                         'charts/saw-portal-container/templates/relay.yaml', 'charts/saw-portal-container/templates/enrolled-runtime.yaml',
+                         'charts/saw-users/templates/_helpers.tpl', 'charts/saw-users/files/workspace.py',
+                         'charts/openshell-rhdh/files/workspace.py']:
             file = stage / relative
             original = file.read_text()
             updated = original.replace('"charts/', '"' + PATH_PREFIX).replace('path: charts/', 'path: ' + PATH_PREFIX)
@@ -91,6 +97,13 @@ def update(source, ref, destination):
             if target.exists():
                 raise ValueError(f'Upstream {relative} now exists; review the local demo directory')
             shutil.copytree(local, target)
+        # The profile catalogs (and the RHDH templates and mirrors made with them)
+        # are generated from the BOM profiles. Regenerate them after the local
+        # profiles and patches are in place instead of editing generated JSON.
+        (stage / 'scripts').mkdir()
+        shutil.copy2(checkout / 'scripts/saw-profile-catalog.py', stage / 'scripts/saw-profile-catalog.py')
+        subprocess.run(['python3', str(stage / 'scripts/saw-profile-catalog.py')], check=True)
+        shutil.rmtree(stage / 'scripts')
         for file in stage.rglob('*.yaml'):
             text = file.read_text()
             for image, digest in PINS.items():

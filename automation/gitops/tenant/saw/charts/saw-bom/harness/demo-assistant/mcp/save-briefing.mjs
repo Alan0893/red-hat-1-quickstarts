@@ -1,3 +1,4 @@
 // Use the existing fixed-path writer with the same store as the demo readers.
-process.env.BRIEFING_DIR ||= "/sandbox/.openclaw/workspace/briefing";
+import { briefingDir } from "./demo-lib.mjs";
+process.env.BRIEFING_DIR ||= briefingDir();
 await import("./briefing-writer.mjs");

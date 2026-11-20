@@ -1223,11 +1223,11 @@ def resolve_sandbox_inference(ws, sb, secrets_dir, mode="proxy", forbidden=()):
     return resolve_inference(ws, sb, read_value, validate_endpoint, forbidden)
 
 
-def openclaw_agent_model(model_ref, current):
-    """Change the model without dropping its provider's selected credential."""
+def openclaw_agent_model(model_ref, current, preserve_binding=True):
+    """Keep native credential bindings; managed custom routes can use provider refs."""
     primary = current.get("primary", "") if isinstance(current, dict) else current
     provider = model_ref.split("/", 1)[0]
-    if isinstance(primary, str) and primary.startswith(provider + "/"):
+    if preserve_binding and isinstance(primary, str) and primary.startswith(provider + "/"):
         binding = primary.partition("@")[2]
         if binding.startswith(provider + ":"):
             model_ref += "@" + binding
@@ -2158,6 +2158,26 @@ def openclaw_replacement_profile(output):
     ids = re.findall(r"openclaw models auth activate ([a-z0-9][a-z0-9_.-]*:setup-[0-9a-f]{8}-"
                      r"[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}) --agent main", text)
     return ids[0] if len(set(ids)) == 1 else None
+
+
+def openclaw_credential_ref_script(provider_type, key_var, oc_env):
+    """Bind the managed provider only; leave OpenClaw auth-store profiles intact."""
+    ref = {"source": "env", "provider": "default", "id": key_var}
+    targets = [{"type": "models.providers.apiKey",
+                "path": f"models.providers.{provider_type}.apiKey",
+                "pathSegments": ["models", "providers", provider_type, "apiKey"],
+                "providerId": provider_type, "ref": ref}]
+    plan = {"version": 1, "protocolVersion": 1, "targets": targets,
+            "scrubEnv": False, "scrubAuthProfilesForProviderTargets": False}
+    return "\n".join([
+        "# SAW: bind runtime credential references",
+        "set -eu", "umask 077",
+        "plan=$(mktemp /sandbox/.openclaw/state/saw-credential-ref.XXXXXX)",
+        """trap 'rm -f "$plan"' EXIT""",
+        "printf '%s\\n' " + shlex.quote(json.dumps(plan)) + ' > "$plan"',
+        f'{oc_env} openclaw secrets apply --from "$plan" --dry-run',
+        f'{oc_env} openclaw secrets apply --from "$plan"',
+    ]) + "\n"
 
 
 def ws_args(name):
@@ -3105,8 +3125,8 @@ class ProfileApplier:
         return "broken" if ("Error" in clean or "Phase: Completed" in clean) else "running"
 
     # Found live after a VM restart: a sandbox reports an error for a while
-    # as its supervisor reconnects, then recovers. Recreating it would lose
-    # /sandbox, so a broken sandbox gets this long to come back first.
+    # as its supervisor reconnects, then recovers. Recreation preserves
+    # /sandbox but ends open sessions, so give it this long to recover first.
     BROKEN_GRACE_SECONDS = 90
     # `sandbox delete` only accepts the deletion; creating the same name
     # before the cleanup finishes fails with "already exists".
@@ -3121,6 +3141,23 @@ class ProfileApplier:
             time.sleep(self.POLL_SECONDS)
             state = self.sandbox_state(ws, sb)
         return state
+
+    def log_broken_sandbox(self, ws, sb):
+        """Capture bounded, read-only diagnostics after the recovery grace."""
+        got = self.cli("sandbox", "get", sb.name, *ws_args(ws.name), check=False, quiet=True)
+        clean = re.sub(r"\x1b\[[0-9;]*m", "", got.out + "\n" + got.err)
+        lines = [line.strip() for line in clean.splitlines()
+                 if re.search(r"\b(Phase|Error|Reason|Message)\b", line, re.IGNORECASE)]
+        for line in lines[:10]:
+            log(f"Sandbox '{sb.name}': {self.sh.mask(line)}")
+        name = self.workload_container(ws, sb)
+        if name:
+            state = self._podman("inspect", "--format",
+                                 "{{.State.Status}} exit={{.State.ExitCode}} "
+                                 "oom={{.State.OOMKilled}} {{.State.Error}}",
+                                 name, check=False, quiet=True)
+            if state.ok:
+                log(f"Workload '{name}': {self.sh.mask(state.out)}")
 
     def harness_source(self, sb):
         """(source id, inline bundle) for a sandbox's harnessRef, or (None, None).
@@ -3158,6 +3195,15 @@ class ProfileApplier:
             # After a VM restart the gateway can report Ready before exec
             # works. Wait before reading config, without changing its policy.
             if not self.wait_exec_ready(ws, sb):
+                # An old workload can exit while reconnecting after a runtime
+                # upgrade, after our first lifecycle check. No
+                # confinement read or policy change has happened yet: leave
+                # lifecycle recovery to the next apply, which archives /sandbox
+                # before recreating it. A confinement hold here would prevent
+                # that recovery indefinitely.
+                if self.sandbox_state(ws, sb) in ("broken", "deleting"):
+                    raise InstallerError(f"sandbox '{sb.name}' stopped while waiting for exec; "
+                                         "retry apply to recover it before changing its tool policy")
                 self.quiesce_openclaw(ws, sb)
                 raise InstallerError(f"sandbox '{sb.name}': cannot verify workspace confinement")
             self.ensure_workspace_confinement(ws, sb)
@@ -3575,18 +3621,31 @@ class ProfileApplier:
             state = self.wait_sandbox(ws, sb, lambda s: s != "broken", self.BROKEN_GRACE_SECONDS)
         if state == "broken":
             key = self.migration_key(ws, sb)
-            if not self.sh.dry_run and key not in self.migrations and not self.sandbox_gateway_ca_ok(ws, sb):
+            self.log_broken_sandbox(ws, sb)
+            if self.sh.dry_run or key in self.migrations:
+                # A record can outlive its archive between applies. Verify it
+                # again before deleting the remaining copy of the workspace.
+                if not self.sh.dry_run:
+                    record = self.migrations[key]
+                    try:
+                        verified = sha256_file(Path(record["archive"])) == record["sha256"]
+                    except (OSError, KeyError, TypeError):
+                        verified = False
+                    if not verified:
+                        raise InstallerError(f"saved /sandbox archive of '{sb.name}' is missing "
+                                             "or invalid; nothing was deleted")
+                log(f"Sandbox '{sb.name}' is not running; recreating it")
+                self.cli("sandbox", "delete", sb.name, *ws_args(ws.name), check=False)
+                state = "deleting"
+            else:
                 labels = self.sandbox_labels(ws, sb)
                 if labels is None:
                     raise InstallerError(f"sandbox '{sb.name}' labels cannot be read; "
                                          "nothing was changed, the apply is retried")
-                self.begin_migration(ws, sb, labels, reason="a stale or missing gateway CA",
-                                     via_volume=True)
+                reason = ("a stale or missing gateway CA" if not self.sandbox_gateway_ca_ok(ws, sb)
+                          else "a workload that did not recover")
+                self.begin_migration(ws, sb, labels, reason=reason, via_volume=True)
                 state = "missing"
-            else:
-                log(f"Sandbox '{sb.name}' is not running; recreating it")
-                self.cli("sandbox", "delete", sb.name, *ws_args(ws.name), check=False)
-                state = "deleting"
         if state == "deleting":
             # Also a deletion an earlier run started (found live: that run
             # failed on "already exists" and left the sandbox Deleting).
@@ -3932,16 +3991,24 @@ class ProfileApplier:
             key_env = f'CUSTOM_API_KEY="${key_var}" '
         onboarded = self.cli(*exec_cmd, "sh", "-c",
                  f"{oc_env} {key_env}openclaw onboard --non-interactive "
-                 f"--accept-risk --mode local {auth_args} --skip-channels --skip-health", check=False)
-        # Re-onboarding an existing sandbox with a different provider or model
-        # (e.g. after switching to a custom endpoint) makes OpenClaw save the
-        # new credential but keep the old connection; activate the new one.
+                 f"--accept-risk --mode local {auth_args} --secret-input-mode ref "
+                 f"--skip-channels --skip-health", check=False)
+        # Activation can temporarily put CUSTOM_API_KEY back into config.
+        # Keep its current runtime value available through native migration and
+        # gateway launch; only the reference is persisted, never this value.
+        if key_env:
+            oc_env = f"{oc_env} {key_env.strip()}"
+        # Keep native onboarding's saved connection metadata intact. A custom
+        # replacement's temporary alias is also needed during native activation.
         profile_id = openclaw_replacement_profile(onboarded.out + "\n" + onboarded.err)
         if profile_id:
             log(f"Activating the new OpenClaw credential '{profile_id}'")
             self.cli(*exec_cmd, "sh", "-c",
                      f"{oc_env} openclaw models auth activate {shlex.quote(profile_id)} --agent main",
                      check=False)
+        if not auth_choice:
+            self.cli(*exec_cmd, "sh", "-c",
+                     openclaw_credential_ref_script(provider.type, key_var, oc_env))
         model_id = model if model.startswith(f"{provider.type}/") else f"{provider.type}/{model}"
         if auth_choice:
             self.cli(*exec_cmd, "sh", "-c",
@@ -3985,7 +4052,9 @@ class ProfileApplier:
                      f"{oc_env} openclaw config set agents.defaults.models "
                      + shlex.quote(json.dumps(choices))
                      + f" && printf '%s\\n' {shlex.quote(json.dumps(list(desired)))} > {model_state}")
-        # Keep activation's credential binding: old profiles may hold stale placeholders.
+        # Native providers keep their selected credential. Custom routes use
+        # the explicit managed provider SecretRef; an old @profile can refer
+        # to a missing/stale auth-store entry after restart and override it.
         current = self.cli(*exec_cmd, "sh", "-c",
                            f"{oc_env} openclaw config get agents.entries.main.model --json",
                            check=False, quiet=True)
@@ -3995,7 +4064,7 @@ class ProfileApplier:
             selected = None
         self.cli(*exec_cmd, "sh", "-c",
                  f"{oc_env} openclaw config set agents.entries.main.model "
-                 f"{shlex.quote(json.dumps(openclaw_agent_model(model_id, selected)))}")
+                 f"{shlex.quote(json.dumps(openclaw_agent_model(model_id, selected, preserve_binding=bool(auth_choice))))}")
         # Tool actions permit workspace writes and edits. Keep OpenClaw's
         # filesystem tool confined to that workspace even if image defaults
         # or a prior onboarding changed its broader filesystem setting.
@@ -4691,20 +4760,9 @@ class ProfileApplier:
                 # Sandbox exec cannot restore foreign ownership. Normalize a copy;
                 # keep the original recovery archive and verify all other metadata.
                 normalized = Path(tmp) / "restore.tar.gz"
-                # Drop anything that belongs to an installer-owned mount. A
-                # recovery archive made while a mount sat somewhere else holds
-                # that mount's files (found live: ./harness/ from an archive
-                # taken before the harness target moved back), and restoring
-                # them over the read-only mount fails the verification below
-                # on every apply, with no way out. The mounts are rebuilt from
-                # their volumes anyway, so they are never ours to restore.
-                owned = tuple(self.preserve_pruned(ws, sb))
                 try:
                     with tarfile.open(local, "r:gz") as source, tarfile.open(normalized, "w:gz") as target:
                         for member in source:
-                            path = member.name if member.name.startswith("./") else "./" + member.name
-                            if any(path == own or path.startswith(own + "/") for own in owned):
-                                continue
                             member.uid, member.gid = map(int, ids)
                             member.uname = member.gname = ""
                             for key in ("uid", "gid", "uname", "gname"):

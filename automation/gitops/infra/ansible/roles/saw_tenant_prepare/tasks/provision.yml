@@ -1,0 +1,146 @@
+---
+# 1. The OpenShell account. saw-users needs its Keycloak subject to render a
+#    container workspace, so create it here rather than in an Argo CD hook.
+- name: Log in to the OpenShell Keycloak
+  ansible.builtin.include_tasks: keycloak_login.yml
+
+- name: Look up the tenant's OpenShell account
+  ansible.builtin.uri:
+    url: "{{ _saw_kc_api }}/users?username={{ saw_tenant_prepare_username | urlencode }}&exact=true"
+    headers: "{{ _saw_kc_headers }}"
+    validate_certs: "{{ saw_tenant_prepare_validate_certs }}"
+  register: _saw_kc_users
+
+- name: Create the tenant's OpenShell account
+  when: _saw_kc_users.json | length == 0
+  ansible.builtin.uri:
+    url: "{{ _saw_kc_api }}/users"
+    method: POST
+    headers: "{{ _saw_kc_headers }}"
+    body_format: json
+    body:
+      username: "{{ saw_tenant_prepare_username }}"
+      firstName: "{{ saw_tenant_prepare_username }}"
+      lastName: User
+      email: "{{ saw_tenant_prepare_username }}@openshell.local"
+      emailVerified: true
+      enabled: true
+      credentials:
+        - type: password
+          value: "{{ saw_tenant_prepare_password }}"
+          temporary: false
+    status_code: 201
+    validate_certs: "{{ saw_tenant_prepare_validate_certs }}"
+  no_log: true
+
+# Same rule as the in-cluster account Job: never reset an existing password.
+- name: Check that an existing account still has the workshop password
+  when: _saw_kc_users.json | length == 1
+  ansible.builtin.uri:
+    url: "{{ saw_tenant_prepare_keycloak_url }}/realms/{{ saw_tenant_prepare_keycloak_realm }}/protocol/openid-connect/token"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      grant_type: password
+      client_id: openshell-cli
+      username: "{{ saw_tenant_prepare_username }}"
+      password: "{{ saw_tenant_prepare_password }}"
+    validate_certs: "{{ saw_tenant_prepare_validate_certs }}"
+  no_log: true
+
+- name: Read the account's subject
+  ansible.builtin.uri:
+    url: "{{ _saw_kc_api }}/users?username={{ saw_tenant_prepare_username | urlencode }}&exact=true"
+    headers: "{{ _saw_kc_headers }}"
+    validate_certs: "{{ saw_tenant_prepare_validate_certs }}"
+  register: _saw_kc_user
+  failed_when: _saw_kc_user.json | length != 1
+
+- name: Read the OpenShell realm roles
+  ansible.builtin.uri:
+    url: "{{ _saw_kc_api }}/roles/{{ item }}"
+    headers: "{{ _saw_kc_headers }}"
+    validate_certs: "{{ saw_tenant_prepare_validate_certs }}"
+  register: _saw_kc_roles
+  loop: [openshell-user, openshell-admin]
+
+- name: Grant the account the OpenShell roles
+  ansible.builtin.uri:
+    url: "{{ _saw_kc_api }}/users/{{ _saw_kc_user.json[0].id }}/role-mappings/realm"
+    method: POST
+    headers: "{{ _saw_kc_headers }}"
+    body_format: json
+    body: "{{ _saw_kc_roles.results | map(attribute='json') | list }}"
+    status_code: 204
+    validate_certs: "{{ saw_tenant_prepare_validate_certs }}"
+
+- name: Remember the tenant's owner subject
+  ansible.builtin.set_fact:
+    saw_tenant_owner_subject: "{{ _saw_kc_user.json[0].id }}"
+
+# 2. A unique AdminNetworkPolicy priority, reused on reruns.
+- name: Look for this tenant's existing priority reservation
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ saw_tenant_prepare_lease_namespace }}"
+    label_selectors:
+      - "saw.redhat.com/tenant={{ guid }}"
+      - app.kubernetes.io/part-of=saw-anp-priority
+  register: _saw_own_lease
+
+- name: Find the priorities nobody holds yet
+  when: _saw_own_lease.resources | length == 0
+  vars:
+    _saw_leases: >-
+      {{ query('kubernetes.core.k8s', api_version='v1', kind='ConfigMap',
+               namespace=saw_tenant_prepare_lease_namespace,
+               label_selector='app.kubernetes.io/part-of=saw-anp-priority')
+         | map(attribute='data.priority') | map('int') | list }}
+    _saw_anps: >-
+      {{ query('kubernetes.core.k8s', api_version='policy.networking.k8s.io/v1alpha1',
+               kind='AdminNetworkPolicy') | map(attribute='spec.priority') | map('int') | list }}
+  ansible.builtin.set_fact:
+    _saw_free: >-
+      {{ range(saw_tenant_prepare_priority_first | int, saw_tenant_prepare_priority_last | int + 1)
+         | reject('in', _saw_leases + _saw_anps) | list }}
+
+# Try them in order; a 409 means another tenant just took that one.
+- name: Start with the lowest free priority
+  when: _saw_own_lease.resources | length == 0
+  ansible.builtin.set_fact:
+    _saw_try: 0
+
+- name: Reserve the lowest free priority
+  when: _saw_own_lease.resources | length == 0
+  ansible.builtin.include_tasks: reserve.yml
+
+- name: Remember the tenant's AdminNetworkPolicy priority
+  when: _saw_own_lease.resources | length > 0
+  ansible.builtin.set_fact:
+    saw_tenant_anp_priority: "{{ _saw_own_lease.resources[0].data.priority | int }}"
+
+# saw_prepare discovers these once per cluster. The tenant chart puts them in
+# its containerDefaults (saw.container.network).
+- name: Read the cluster's container network inputs
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ saw_tenant_prepare_lease_namespace }}"
+    name: "{{ saw_tenant_prepare_network_configmap }}"
+  register: _saw_network
+  failed_when: _saw_network.resources | default([]) | length != 1
+
+- name: Remember the container network inputs
+  vars:
+    _data: "{{ _saw_network.resources[0].data }}"
+  ansible.builtin.set_fact:
+    saw_tenant_container_network:
+      issuer: "{{ _data.issuer }}"
+      commonEgress: "{{ _data.commonEgress | from_json }}"
+      issuerEgress: "{{ _data.issuerEgress | from_json }}"
+      applicationSetControllerLabels: "{{ _data.applicationSetControllerLabels | from_json }}"
+
+- name: Report the container workspace inputs
+  ansible.builtin.debug:
+    msg: "{{ saw_tenant_prepare_username }}: subject {{ saw_tenant_owner_subject }}, AdminNetworkPolicy priority {{ saw_tenant_anp_priority }}"

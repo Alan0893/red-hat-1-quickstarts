@@ -6,11 +6,21 @@ spec:
   agent: openclaw
   version: 0.1.0
   plugins: []
+  # Each server's tools and what SAW's tool gate does with them. The readers
+  # only read the tenant's own sources; the writer only saves the briefing.
   mcpServers:
     - name: mailpit_reader
       governanceProfile: mailpit
+      tools:
+        - {name: saw_read_email, action: allow}
     - name: mattermost_reader
       governanceProfile: mattermost
+      tools:
+        - {name: saw_read_chat, action: allow}
     - name: calendar_reader
       governanceProfile: calendar
+      tools:
+        - {name: saw_read_calendar, action: allow}
     - name: briefing_writer
+      tools:
+        - {name: save_briefing, action: allow}

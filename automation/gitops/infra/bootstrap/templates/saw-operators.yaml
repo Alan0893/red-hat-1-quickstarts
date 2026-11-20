@@ -1,6 +1,9 @@
 {{- if eq (lower (toString .Values.saw.enabled)) "true" }}
 {{- $saw := .Values.saw }}
-{{- range $name := list "external-secrets-operator" "external-secrets" "openshift-cnv" "saw-keycloak" "openshell-agents" "vault" }}
+{{- $virtualization := ne (lower (toString (dig "virtualization" "enabled" true $saw))) "false" }}
+{{- $namespaces := list "external-secrets-operator" "external-secrets" "saw-keycloak" "openshell-agents" "vault" }}
+{{- if $virtualization }}{{- $namespaces = append $namespaces "openshift-cnv" }}{{- end }}
+{{- range $name := $namespaces }}
 ---
 apiVersion: v1
 kind: Namespace
@@ -11,10 +14,13 @@ metadata:
   annotations:
     argocd.argoproj.io/sync-wave: "-3"
 {{- end }}
-{{- range $operator := list
+{{- $operators := list
   (dict "namespace" "external-secrets-operator" "name" "openshift-external-secrets-operator" "channel" $saw.operators.externalSecretsChannel "allNamespaces" true)
-  (dict "namespace" "openshift-cnv" "name" "kubevirt-hyperconverged" "channel" $saw.operators.virtualizationChannel)
   (dict "namespace" "saw-keycloak" "name" "rhbk-operator" "channel" $saw.operators.keycloakChannel) }}
+{{- if $virtualization }}
+{{- $operators = append $operators (dict "namespace" "openshift-cnv" "name" "kubevirt-hyperconverged" "channel" $saw.operators.virtualizationChannel) }}
+{{- end }}
+{{- range $operator := $operators }}
 ---
 apiVersion: operators.coreos.com/v1
 kind: OperatorGroup

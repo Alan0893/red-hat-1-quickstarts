@@ -1,0 +1,144 @@
+# Shared site for every container workspace on the cluster (saw-users
+# containerDefaults). Adapted from upstream SAW
+# overrides/saw-container-defaults.yaml at b8877b4c, minus the parts that were
+# specific to one cluster: inference host, OpenClaw image, runtime image, ANP
+# priority. application-saw.yaml fills those in, plus the egress rules and
+# issuer that saw_prepare discovers (the saw-container-network ConfigMap).
+# @OWNER@/@RUNTIME@/... placeholders are expanded by saw-users.
+governanceNamespace: openshell-agents
+automaticEnrollment:
+  enabled: true
+  # SAW grants pull access to an in-cluster ImageStream here. Our runtime image
+  # is published, so those grants are unused, but the namespace must exist.
+  buildNamespace: openshell-agents
+  autoApprove: true
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: '2'
+      memory: 4Gi
+  relay:
+    keycloakNamespace: saw-keycloak
+    keycloakProvisionerSecret: saw-relay-provisioner
+    egress: []
+stack:
+  identity:
+    values:
+      enabled: true
+      network:
+        bootstrapEgress: []  # application-saw.yaml: API and DNS
+      ownerID: '@INSTALLATION@'
+      targetNamespace: '@RUNTIME@'
+      gateway: '@OWNER@'
+      serverSans:
+      - '@OWNER@-gateway.@RUNTIME@.svc'
+      - '@OWNER@-gateway.@RUNTIME@.svc.cluster.local'
+  policy:
+    values:
+      enabled: true
+      targetNamespace: '@RUNTIME@'
+      gatewayId: '@OWNER@'
+      gatewayServiceAccount: '@OWNER@-gateway'
+      sandboxServiceAccount: '@OWNER@-sandbox'
+      mode: container
+      network:
+        egress:
+        - name: dns
+          to:
+          - pods:
+              namespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: openshift-dns
+              podSelector:
+                matchLabels:
+                  dns.operator.openshift.io/daemonset-dns: default
+          ports:
+          - portNumber:
+              protocol: UDP
+              port: 53
+          - portNumber:
+              protocol: TCP
+              port: 53
+          - portNumber:
+              protocol: UDP
+              port: 5353
+          - portNumber:
+              protocol: TCP
+              port: 5353
+        - name: gateway
+          to:
+          - pods:
+              namespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: '@RUNTIME@'
+              podSelector:
+                matchLabels:
+                  app.kubernetes.io/instance: '@OWNER@'
+                  openshell.pattern/role: gateway
+          ports:
+          - portNumber:
+              protocol: TCP
+              port: 17670
+        - name: workload-boundary
+          to:
+          - pods:
+              namespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: '@RUNTIME@'
+              podSelector:
+                matchLabels:
+                  openshell.ai/boundary-role: workload
+          ports:
+          - portNumber:
+              protocol: TCP
+              port: 5500
+  gateway:
+    values:
+      deployment:
+        mode: container
+      kubernetes:
+        experimental: true
+        workload:
+          image: quay.io/aipcc/base-images/agentic/openclaw@sha256:896d1526ee29b53167034ba65d1c758c8da777f441ed094e19f3bcf6d7445c61
+        identity:
+          serverTlsSecret: '@OWNER@-server'  # notsecret gitleaks:allow (a Secret name)
+          clientCaSecret: '@OWNER@-client-ca'  # notsecret gitleaks:allow (a Secret name)
+          jwtSecret: '@OWNER@-jwt'
+          credentialKeySecret: '@OWNER@-kek'
+        storage:
+          gatewaySize: 1Gi
+          workspaceSize: 10Gi
+        governance:
+          endpoint: http://governance-interceptor.openshell-agents.svc:18081
+        network:
+          reconcilerNamespace: '@TRUSTED@'
+          reconcilerLabels:
+            app.kubernetes.io/instance: '@OWNER@'
+            openshell.pattern/role: reconciler
+          gatewayEgress:
+          - to:
+            - namespaceSelector:
+                matchLabels:
+                  kubernetes.io/metadata.name: openshell-agents
+              podSelector:
+                matchLabels:
+                  app.kubernetes.io/name: governance-interceptor
+            ports:
+            - protocol: TCP
+              port: 18081
+      route:
+        enabled: false
+  audit:
+    values:
+      enabled: true
+      trustedNamespace: '@ARCHIVE@'
+      runtimeNamespace: '@RUNTIME@'
+      ownerID: '@INSTALLATION@'
+      image: ghcr.io/openclaw/openclaw@sha256:0a5ff5e682e62afa19149df126aa50063bf65ef885b5c94713ce32dc0eb12e15
+      identity:
+        subject: '@SUBJECT@'
+        username: '@OWNER@'
+        workspace: agent
+        sandbox: audited

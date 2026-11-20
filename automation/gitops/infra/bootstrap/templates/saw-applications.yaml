@@ -2,6 +2,10 @@
 {{- $saw := .Values.saw -}}
 {{- $domain := required "saw.clusterDomain is required (without the apps. prefix)" $saw.clusterDomain -}}
 {{- $password := required "saw.keycloak.postgresPassword is required" $saw.keycloak.postgresPassword -}}
+{{- $governanceValues := deepCopy ($saw.governance.values | default dict) -}}
+{{- if and (eq (lower (toString (dig "container" "enabled" false $saw))) "true") (dig "container" "governanceImage" "" $saw) (not (hasKey $governanceValues "image")) -}}
+{{- $_ := set $governanceValues "image" $saw.container.governanceImage -}}
+{{- end -}}
 {{- $vaultDefaults := dict "global" (dict "localClusterDomain" (printf "apps.%s" $domain)) "vault" (dict "server" (dict "image" (dict "tag" "2.1.2-ubi@sha256:b46738fbe5494e4141e94a0641e4e676e090af788b7729d8b3af2b62cadf5aef"))) -}}
 {{- $esoConnection := fromYaml `
 vault:
@@ -25,10 +29,17 @@ caProvider:
 {{- $apps := list
   (dict "name" "saw-vault" "release" "vault" "namespace" "vault" "path" "automation/gitops/infra/saw/vault" "wave" "0" "values" (mustMergeOverwrite $vaultDefaults (deepCopy $saw.vault.values)))
   (dict "name" "saw-external-secrets" "namespace" "external-secrets" "path" "automation/gitops/infra/saw/external-secrets" "wave" "0" "values" (mustMergeOverwrite $esoDefaults (deepCopy $saw.externalSecrets.values)))
-  (dict "name" "saw-virtualization" "namespace" "openshift-cnv" "path" "automation/gitops/tenant/saw/charts/openshift-cnv" "wave" "0" "values" dict)
   (dict "name" "saw-keycloak" "namespace" "saw-keycloak" "path" "automation/gitops/tenant/saw/charts/openshell-keycloak" "wave" "0" "values" (mustMergeOverwrite $keycloakDefaults (deepCopy $saw.keycloak.values)))
   (dict "name" "saw-governance-policy" "namespace" "openshell-agents" "path" "automation/gitops/tenant/saw/charts/governance-policy" "wave" "0" "values" dict)
-  (dict "name" "saw-governance-interceptor" "namespace" "openshell-agents" "path" "automation/gitops/tenant/saw/charts/governance-interceptor" "wave" "0" "values" $saw.governance.values) -}}
+  (dict "name" "saw-governance-interceptor" "namespace" "openshell-agents" "path" "automation/gitops/tenant/saw/charts/governance-interceptor" "wave" "0" "values" $governanceValues) -}}
+{{- if ne (lower (toString (dig "virtualization" "enabled" true $saw))) "false" -}}
+{{- $apps = append $apps (dict "name" "saw-virtualization" "namespace" "openshift-cnv" "path" "automation/gitops/tenant/saw/charts/openshift-cnv" "wave" "0" "values" dict) -}}
+{{- end -}}
+{{- $container := $saw.container | default dict -}}
+{{- if and (eq (lower (toString $container.enabled)) "true") (ne (lower (toString $container.agentSandbox)) "false") -}}
+{{- /* Its CRD is too large for client-side apply's last-applied annotation. */ -}}
+{{- $apps = append $apps (dict "name" "saw-agent-sandbox" "namespace" "agent-sandbox-system" "path" "automation/gitops/tenant/saw/charts/agent-sandbox" "wave" "0" "values" (dict "enabled" true) "syncOptions" (list "ServerSideApply=true")) -}}
+{{- end -}}
 {{- range $app := $apps }}
 ---
 apiVersion: argoproj.io/v1alpha1
@@ -58,6 +69,9 @@ spec:
     syncOptions:
       - CreateNamespace=true
       - SkipDryRunOnMissingResource=true
+{{- range $app.syncOptions }}
+      - {{ . }}
+{{- end }}
     retry:
       limit: 30
       backoff:

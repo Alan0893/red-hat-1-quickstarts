@@ -1,10 +1,17 @@
 {{- $saw := .Values.saw | default dict }}
 {{- $demo := $saw.demo | default dict }}
-{{- if and (ne (lower (toString $saw.enabled)) "false") (eq (lower (toString $demo.enabled)) "true") (eq (lower (toString $demo.provisioningEnabled)) "true") }}
+{{- if and (ne (lower (toString $saw.enabled)) "false") (eq (include "tenant.sawDemo" $) "provision") }}
 {{- $name := required "saw.userName is required" $saw.userName }}
 {{- $account := $saw.account | default dict }}
-{{- if ne (lower (toString $account.enabled)) "true" }}{{ fail "saw.account.enabled is required for demo provisioning" }}{{ end }}
+{{- $container := eq (lower (toString ($saw.deploymentMode | default "vm"))) "container" }}
+{{- /* VM tenants get their account from this chart; container tenants from saw_tenant_prepare. */}}
+{{- if and (not $container) (ne (lower (toString $account.enabled)) "true") }}{{ fail "saw.account.enabled is required for demo provisioning" }}{{ end }}
 {{- $password := required "saw.account.password is required for demo provisioning" $account.password }}
+{{- $vaultPath := printf "hub/saw-%s" $name }}
+{{- if $container }}
+{{- /* Same registration-scoped path as the inference seed and saw-users. */}}
+{{- $vaultPath = printf "hub/saw-%s/%s" $name (printf "%s:%v" $name 1 | sha256sum | trunc 16) }}
+{{- end }}
 {{- $id := printf "saw-%s-demo-seed" $name }}
 {{- $issuer := printf "https://openshell-keycloak-ingress-saw-keycloak.apps.%s/realms/openshell" $saw.clusterDomain }}
 apiVersion: v1
@@ -107,7 +114,7 @@ spec:
           env:
             - {name: SAW_INGRESS_CA, value: /ingress-ca/ca-bundle.crt}
             - {name: SAW_USER, value: {{ $name | quote }}}
-            - {name: VAULT_PATH, value: {{ printf "hub/saw-%s" $name | quote }}}
+            - {name: VAULT_PATH, value: {{ $vaultPath | quote }}}
             - {name: OIDC_ISSUER, value: {{ $demo.oidcIssuer | default $issuer | quote }}}
           volumeMounts:
             - {name: input, mountPath: /input, readOnly: true}
