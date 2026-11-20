@@ -38,7 +38,8 @@
        so a namespace UID/GID can't enter it. This is upstream's
        container-notebook-image rebuild (chmod o+x /sandbox), published. */ -}}
 {{- $notebook := $c.notebookImage | default "ghcr.io/sauagarwa/saw-openclaw@sha256:05f17f3872f864e44231fb3cea30cd4dd2ba9887b382a67b261f068a234b79a2" -}}
-{{- $runtime := $c.runtimeImage | default "ghcr.io/validatedpatterns-sandbox/saw-kubernetes-runtime@sha256:02e27f5e9fadba01753cdfe424a7e6cf7f2519cab9d8f9a04109047b0772a92c" -}}
+{{- /* SAW kubernetes-runtime built from secure-agent-workspace db974826 (native OpenShell providers). */ -}}
+{{- $runtime := $c.runtimeImage | default "quay.io/sauagarw/saw-kubernetes-runtime@sha256:803e7bfc9136711d351c54956b3b170ef70f5426d363a28da73d78f1cf801d58" -}}
 {{- range $image := list $notebook $runtime -}}
 {{- if not (regexMatch "^.+@sha256:[a-f0-9]{64}$" $image) -}}
 {{- fail (printf "%s must be pinned by digest" $image) -}}
