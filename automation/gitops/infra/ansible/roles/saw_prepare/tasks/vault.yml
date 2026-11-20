@@ -123,3 +123,10 @@
         kind: RoleBinding
         namespace: "{{ saw_prepare_vault_namespace }}"
         name: "saw-vault-bootstrap-{{ _saw_run_id }}"
+
+# Vault starts sealed after every restart, and only the bootstrap Job above
+# unseals it. Keep a small CronJob that unseals it again from the stored key.
+- name: Keep the workshop Vault unsealed after restarts
+  kubernetes.core.k8s:
+    state: present
+    template: vault-unseal-cronjob.yaml.j2

@@ -1,5 +1,4 @@
 ---
-# The OpenShell account is left in place, like VM tenants' accounts.
 - name: Release the tenant's AdminNetworkPolicy priority
   kubernetes.core.k8s:
     state: absent
@@ -9,3 +8,25 @@
     label_selectors:
       - "saw.redhat.com/tenant={{ guid }}"
       - app.kubernetes.io/part-of=saw-anp-priority
+
+# GUIDs are never reused, so a leftover account would only pile up.
+- name: Log in to the OpenShell Keycloak
+  ansible.builtin.include_tasks: keycloak_login.yml
+
+- name: Look up the tenant's OpenShell account
+  ansible.builtin.uri:
+    url: "{{ _saw_kc_api }}/users?username={{ saw_tenant_prepare_username | urlencode }}&exact=true"
+    headers: "{{ _saw_kc_headers }}"
+    validate_certs: "{{ saw_tenant_prepare_validate_certs }}"
+  register: _saw_kc_users
+
+- name: Delete the tenant's OpenShell account
+  ansible.builtin.uri:
+    url: "{{ _saw_kc_api }}/users/{{ item.id }}"
+    method: DELETE
+    headers: "{{ _saw_kc_headers }}"
+    status_code: [204, 404]
+    validate_certs: "{{ saw_tenant_prepare_validate_certs }}"
+  loop: "{{ _saw_kc_users.json | selectattr('username', 'equalto', saw_tenant_prepare_username) | list }}"
+  loop_control:
+    label: "{{ item.username }}"

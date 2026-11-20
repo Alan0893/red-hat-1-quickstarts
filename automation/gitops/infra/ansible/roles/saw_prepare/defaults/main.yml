@@ -11,6 +11,8 @@ saw_prepare_vault_namespace: vault
 saw_prepare_vault_pod: vault-0
 saw_prepare_vault_token_secret: "{{ saw_vault_writer_secret | default('saw-vault-writer') }}"
 saw_prepare_vault_token_key: token
+# How often to check whether Vault came back sealed after a restart.
+saw_prepare_vault_unseal_schedule: "*/2 * * * *"
 saw_prepare_vault_ssh_path: hub/ssh
 saw_prepare_python_image: registry.access.redhat.com/ubi9/python-311@sha256:a0bdb55576fc5b8d6704279307817828ef027e1065533ceba133fe9516003a6c
 saw_prepare_mirror_tool_image: registry.redhat.io/ubi8/skopeo@sha256:7aef80fe88a7fdf028b20e7333f5e69c1f4bcadc5265950a1ad92abe44c5fb3c
