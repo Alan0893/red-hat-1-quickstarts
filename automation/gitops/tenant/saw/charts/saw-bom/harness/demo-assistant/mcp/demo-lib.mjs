@@ -1,5 +1,5 @@
 // Demo adapters share transport and validation; briefing storage stays in briefing-lib.mjs.
-import { readFileSync } from "node:fs";
+import { accessSync, constants, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
@@ -16,8 +16,19 @@ export function validateConfig(config) {
   }
 }
 
+// Container workspaces mount a writable /sandbox/briefing; VM workspaces keep
+// the store in OpenClaw's workspace, where they always have.
+export function briefingDir() {
+  try {
+    accessSync("/sandbox/briefing", constants.W_OK);
+    return "/sandbox/briefing";
+  } catch {
+    return "/sandbox/.openclaw/workspace/briefing";
+  }
+}
+
 export async function loadRuntime() {
-  process.env.BRIEFING_DIR ||= "/sandbox/.openclaw/workspace/briefing";
+  process.env.BRIEFING_DIR ||= briefingDir();
   const briefing = await import("./briefing-lib.mjs");
   const config = JSON.parse(readFileSync(new URL("../config.json", import.meta.url), "utf8"));
   validateConfig(config);
