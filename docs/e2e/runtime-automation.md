@@ -34,13 +34,20 @@ re-derive:
 - `/health` is 503 unless `<repo>/runtime-automation` exists. The directory is
   the only thing it checks besides `ansible-playbook` being runnable.
 - Path resolution: `/app/runtime-automation` if present, otherwise
-  `/showroom/repo/runtime-automation`. Both are used in the field; the chart
-  version in play here only mounts the full repo.
+  `/showroom/repo/runtime-automation`.
+- **Which path exists is decided by the showroom chart, not the image.** Chart
+  2.1.x (what showroom v1.6.8 pulls) mounts the content repo at `/showroom/repo`
+  only. Chart 2.3.x additionally mounts `repo/runtime-automation` at
+  `/app/runtime-automation` and `repo/qa-automation` at `/app/qa-automation`.
+- `zerotouch-automation:v1.3.3` reads `/app/runtime-automation` **only** and
+  exits 3 at startup when it is missing, so it cannot work on chart 2.1.x even
+  with a content tree. `zt-runner:v2.5.0` reads both paths and only degrades.
 - `/config` scans `runtime-automation/module-*/` for `*.yml`. Module names have
   to start with `module-`; stage names are the filenames.
 - Endpoints are `/stream/{setup,solve,validate}/<module>`, SSE, proxied by
   nginx with the `/stream` prefix stripped.
-- `validation_check` and `validation_fail` action plugins ship in the image.
+- The `validation_check` action plugin ships in the image; `validation_fail`
+  does not exist in v2.5.0.
 - Ansible core 2.16.18, kubernetes.core 2.4.2, community.general 8.6.8.
 - Extravars are assembled from `/user_data/user_data.yml` (mounted ConfigMap)
   plus a kubeconfig Secret lookup: `k8s_kubeconfig`, `guid`, `student_user`,
@@ -63,10 +70,19 @@ Each of these can independently make the lab look broken:
    cluster, so `ocp4_workload_showroom_runtime_automation_cluster_admin: true`
    is the right setting. In tenant (shared-cluster) mode, grant `admin` per
    namespace using `..._namespace_suffixes` instead.
-4. **Runner image compatible with the content** — either a tree the deployed
-   image accepts, or the image pinned (below).
-5. **A content tag workflow** — the content ref is per stage; a new tag is
+4. **A showroom chart that mounts the tree** — chart 2.3.x mounts both
+   `repo/runtime-automation` and `repo/qa-automation`; chart 2.1.x (wired to
+   showroom v1.6.8) mounts only `/showroom/repo`. Raising the showroom
+   collection to v1.8.0 also raises the chart to 2.3.x.
+5. **Runner image compatible with the content** — `zt-runner:v2.5.0` reads both
+   paths and degrades; `zerotouch-automation:v1.3.3` reads `/app` only and
+   exits. Do not pin v1.3.3 on chart 2.1.x.
+6. **A content tag workflow** — the content ref is per stage; a new tag is
    needed for every change to these playbooks.
+
+Until 1, 2 and 4 are all true, the lab sets
+`ocp4_workload_showroom_runtime_automation_enable: false` (agnosticv #29174) so
+the sidecar is not deployed at all and seats can provision.
 
 ## Decisions so far
 
@@ -93,7 +109,9 @@ Each of these can independently make the lab look broken:
 ## Roadmap
 
 - [x] Diagnose the cpmxz seat failures.
-- [x] Stopgap: pin the runner image (agnosticv #29172).
+- [x] Stopgap: pin the runner image (agnosticv #29172). **Rejected** — v1.3.3
+      exits on chart 2.1.x, which has no `/app/runtime-automation` mount.
+- [x] Disable the sidecar for this item so seats can provision (agnosticv #29174).
 - [x] Scaffold `runtime-automation/` with module 2, 3, 4 and 7 gates.
 - [ ] Tag a new content ref and point the test stage at it.
 - [ ] Bump the tenant `test` stage showroom pin to v1.8.0 so the identity
