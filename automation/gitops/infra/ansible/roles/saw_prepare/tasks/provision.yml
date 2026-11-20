@@ -22,33 +22,40 @@
     _saw_registry_destination: "image-registry.openshift-image-registry.svc:5000/{{ saw_prepare_namespace }}/{{ saw_prepare_mirror_repository }}:{{ _saw_tag }}"
 
 # The vault and openshell-agents namespaces are created by the infra bootstrap
-# Application, so check that it rendered before waiting on them.
+# Application, so check that it rendered before waiting on them. Argo CD can
+# report an error condition that clears on its next pass, such as
+# InvalidSpecError while AppProject/default is still being created, so error
+# conditions only fail this check if they outlast the wait.
 - name: Wait for Argo CD to reconcile the infra bootstrap Application
-  kubernetes.core.k8s_info:
-    api_version: argoproj.io/v1alpha1
-    kind: Application
-    namespace: "{{ saw_prepare_bootstrap_namespace }}"
-    name: "{{ saw_prepare_bootstrap_application }}"
-  register: _saw_bootstrap_app
-  retries: "{{ saw_prepare_bootstrap_retries }}"
-  delay: "{{ saw_prepare_delay }}"
-  until: >-
-    _saw_bootstrap_app.resources | default([]) | length > 0 and
-    ((_saw_bootstrap_app.resources[0].status.sync.status | default('Unknown')) != 'Unknown' or
-     (_saw_bootstrap_app.resources[0].status.conditions | default([]) | selectattr('type', 'search', 'Error$') | list | length > 0))
-
-- name: Fail early when the infra bootstrap Application cannot render or sync
-  vars:
-    _saw_bootstrap_errors: >-
-      {{ _saw_bootstrap_app.resources[0].status.conditions | default([])
-         | selectattr('type', 'search', 'Error$') | list }}
-  ansible.builtin.fail:
-    msg: >-
-      Infra bootstrap Application {{ saw_prepare_bootstrap_application }} in
-      {{ saw_prepare_bootstrap_namespace }} reports
-      {{ _saw_bootstrap_errors | map(attribute='type') | join(', ') }}:
-      {{ _saw_bootstrap_errors | map(attribute='message') | join(' | ') }}
-  when: _saw_bootstrap_errors | length > 0
+  block:
+    - name: Wait for the infra bootstrap Application to render without errors
+      kubernetes.core.k8s_info:
+        api_version: argoproj.io/v1alpha1
+        kind: Application
+        namespace: "{{ saw_prepare_bootstrap_namespace }}"
+        name: "{{ saw_prepare_bootstrap_application }}"
+      register: _saw_bootstrap_app
+      retries: "{{ saw_prepare_bootstrap_retries }}"
+      delay: "{{ saw_prepare_delay }}"
+      until: >-
+        _saw_bootstrap_app.resources | default([]) | length > 0 and
+        (_saw_bootstrap_app.resources[0].status.sync.status | default('Unknown')) != 'Unknown' and
+        (_saw_bootstrap_app.resources[0].status.conditions | default([]) | selectattr('type', 'search', 'Error$') | list | length == 0)
+  rescue:
+    - name: Report why the infra bootstrap Application did not render
+      vars:
+        _saw_bootstrap_status: "{{ (_saw_bootstrap_app.resources | default([{}]) | first).status | default({}) }}"
+        _saw_bootstrap_errors: >-
+          {{ _saw_bootstrap_status.conditions | default([]) | selectattr('type', 'search', 'Error$') | list }}
+      ansible.builtin.fail:
+        msg: >-
+          Infra bootstrap Application {{ saw_prepare_bootstrap_application }} in
+          {{ saw_prepare_bootstrap_namespace }} did not render without errors
+          (sync={{ _saw_bootstrap_status.sync.status | default('unknown') }}).
+          {% if _saw_bootstrap_errors %}It still reports
+          {{ _saw_bootstrap_errors | map(attribute='type') | join(', ') }}:
+          {{ _saw_bootstrap_errors | map(attribute='message') | join(' | ') }}{% endif %}
+          API error={{ ansible_failed_result.msg | default('none') }}
 
 - name: Wait for the infrastructure namespaces
   block:
